@@ -168,7 +168,6 @@ def maxwell_filter_prepare_emptyroom(
         bads = raw_er_prepared.info["bads"]
 
     # bads = [ch_name for ch_name in bads if ch_name.startswith("MEG")]
-    # print('----- MNE: include bads: ', bads)
     raw_er_prepared.info["bads"] = bads
 
     # handle dev_head_t
@@ -2093,12 +2092,14 @@ def _update_sss_info(
         components=components,
     )
     max_info_dict = dict(max_st=max_st)
+    print('--------- _update_sss_info')
     if st_only:
         max_info_dict.update(sss_info=dict(), sss_cal=dict(), sss_ctc=dict())
     else:
         max_info_dict.update(sss_info=sss_info_dict, sss_cal=sss_cal, sss_ctc=sss_ctc)
         # Reset 'bads' for any MEG channels since they've been reconstructed
-        _reset_meg_bads(raw.info)
+        # _reset_meg_bads(raw.info)
+        print('--------- dont reset meg bads')
         # set the reconstruction transform
         with raw.info._unlock():
             raw.info["dev_head_t"] = recon_trans
