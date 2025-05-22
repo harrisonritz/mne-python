@@ -228,6 +228,7 @@ def maxwell_filter(
     extended_proj=(),
     st_overlap=None,
     mc_interp=None,
+    iterative=False,  # Add this parameter
     verbose=None,
 ):
     """Maxwell filter data using multipole moments.
@@ -282,6 +283,12 @@ def maxwell_filter(
 
         .. versionadded:: 1.10
     %(maxwell_mc_interp)s
+    iterative : bool
+        If True and tSSS is used, apply iterative SSS method before temporal
+        projection. This can be beneficial for systems with low channel counts.
+        Default is False.
+
+        .. versionadded:: 1.10
     %(verbose)s
 
     Returns
@@ -416,6 +423,7 @@ def maxwell_filter(
         extended_proj=extended_proj,
         st_overlap=st_overlap,
         mc_interp=mc_interp,
+        iterative=iterative,  # Add this
     )
     raw_sss = _run_maxwell_filter(raw, **params)
     # Update info
@@ -448,6 +456,7 @@ def _prep_maxwell_filter(
     reconstruct="in",
     st_overlap=False,
     mc_interp="zero",
+    iterative=False,  # Add this parameter
     verbose=None,
 ):
     # There are an absurd number of different possible notations for spherical
@@ -671,6 +680,7 @@ def _prep_maxwell_filter(
     update_kwargs.update(
         nchan=good_mask.sum(), st_only=st_only, recon_trans=recon_trans
     )
+    # Add iterative to params
     params = dict(
         skip_by_annotation=skip_by_annotation,
         st_duration=st_duration,
@@ -693,6 +703,7 @@ def _prep_maxwell_filter(
         st_fixed=st_fixed,
         st_overlap=st_overlap,
         mc=mc,
+        iterative=iterative,  # Add this
     )
     return params
 
@@ -723,6 +734,7 @@ def _run_maxwell_filter(
     st_fixed,
     st_overlap,
     mc,
+    iterative=False,  # Add this parameter
 ):
     # Eventually find_bad_channels_maxwell could be sped up by moving this
     # outside the loop (e.g., in the prep function) but regularization depends
@@ -760,6 +772,19 @@ def _run_maxwell_filter(
     # find_bad_channels_maxwell modifies good_mask
     mc.initialize(_get_this_decomp_trans, info["dev_head_t"], S_recon)
     update_kwargs.update(reg_moments=mc.reg_moments_0)
+    
+    # Get the initial SSS basis for iterative method
+    if iterative and st_correlation is not None:
+        # Get the SSS basis decomposition for the current head position
+        S_decomp_init, _, _, _, _ = _get_this_decomp_trans(
+            info["dev_head_t"], t=0.0
+        )
+        int_order = update_kwargs.get('int_order', 8)
+        ext_order = update_kwargs.get('ext_order', 3)
+    else:
+        S_decomp_init = None
+        int_order = None
+        ext_order = None
 
     # Process each valid block of data separately
     for onset, end in zip(onsets, ends):
@@ -773,9 +798,22 @@ def _run_maxwell_filter(
             n_overlap = 0
             window = "boxcar"
         if st_fixed and st_correlation is not None:
-            fun = partial(_do_tSSS_on_avg_trans, mc=mc)
+            fun = partial(
+                _do_tSSS_on_avg_trans, 
+                mc=mc,
+                iterative=iterative,
+                S_decomp=S_decomp_init,
+                int_order=int_order,
+                ext_order=ext_order,
+            )
         else:
-            fun = _do_tSSS
+            fun = partial(
+                _do_tSSS,
+                iterative=iterative,
+                S_decomp=S_decomp_init,
+                Lin=int_order,
+                Lout=ext_order,
+            )
         tsss = _COLA(
             partial(
                 fun,
@@ -1109,7 +1147,12 @@ def _do_tSSS_on_avg_trans(
     start,
     stop,
     sfreq,
+    iterative=False,
+    S_decomp=None,
+    int_order=None,
+    ext_order=None,
 ):
+    """Compute and apply SSP-like projection vectors based on min corr with average transform."""
     # Get the average transformation over the start, stop interval and split data
     op_in, op_resid, n_positions = mc.get_avg_op(start=start, stop=stop)
     orig_in_data = op_in @ orig_data
@@ -1124,6 +1167,10 @@ def _do_tSSS_on_avg_trans(
         start=start,
         stop=stop,
         sfreq=sfreq,
+        iterative=iterative,
+        S_decomp=S_decomp,
+        Lin=int_order,
+        Lout=ext_order,
     )
 
 
@@ -1138,13 +1185,71 @@ def _do_tSSS(
     start,
     stop,
     sfreq,
+    iterative=False,
+    S_decomp=None,
+    Lin=None,
+    Lout=None,
 ):
-    """Compute and apply SSP-like projection vectors based on min corr."""
+    """Compute and apply SSP-like projection vectors based on min corr.
+    
+    Parameters
+    ----------
+    clean_data : ndarray
+        Clean data to be processed.
+    orig_in_data : ndarray
+        Original internal data.
+    resid : ndarray
+        Residual data.
+    st_correlation : float
+        Correlation threshold.
+    n_positions : int
+        Number of positions.
+    tsss_valid : bool
+        Whether tSSS is valid for this segment.
+    start : int
+        Start sample.
+    stop : int
+        Stop sample.
+    sfreq : float
+        Sampling frequency.
+    iterative : bool
+        If True, use iterative SSS method before projection.
+    S_decomp : ndarray, optional
+        SSS basis matrix (required if iterative=True).
+    Lin : int, optional
+        Number of inner harmonics (required if iterative=True).
+    Lout : int, optional
+        Number of outer harmonics (required if iterative=True).
+        
+    Returns
+    -------
+    processed_data : ndarray
+        Processed data.
+    """
+    if iterative:
+        if S_decomp is None or Lin is None or Lout is None:
+            raise ValueError(
+                "S_decomp, Lin, and Lout must be provided when iterative=True"
+            )
+        
+        # Apply iterative SSS to compute weights
+        X = _do_iterative(S_decomp, orig_in_data, Lin, Lout)
+        
+        # Reconstruct the data using iterative weights
+        orig_in_data_iter = S_decomp @ X
+        
+        # Use the iteratively reconstructed data for projection
+        data_for_projection = orig_in_data_iter
+    else:
+        # Use original internal data for projection
+        data_for_projection = orig_in_data
+    
     if not tsss_valid:
         t_proj = np.empty((clean_data.shape[1], 0))
     else:
         np.asarray_chkfinite(resid)
-        t_proj = _overlap_projector(orig_in_data, resid, st_correlation)
+        t_proj = _overlap_projector(data_for_projection, resid, st_correlation)
+    
     # Apply projector according to Eq. 12 in :footcite:`TauluSimola2006`
     start, stop = start / sfreq, (stop - 1) / sfreq
     t_str = f"{start:8.3f} - {stop:8.3f} s"
@@ -1152,10 +1257,78 @@ def _do_tSSS(
         f"        Projecting {t_proj.shape[1]:2d} intersecting tSSS "
         f"component{_pl(t_proj.shape[1], ' ')} for {t_str}"
     )
+    if iterative:
+        msg += " (iterative mode)"
     if n_positions > 1:
         msg += f" (across {n_positions:2d} position{_pl(n_positions, ' ')})"
     logger.info(msg)
+    
     return (clean_data - np.dot(np.dot(clean_data, t_proj), t_proj.T),)
+
+
+def _do_iterative(S, PHI, Lin, Lout, ni=5):
+    """Compute SSS weights using iterative method.
+    
+    Code for iterative implementation of the Signal Space Separation method.
+    Based on 'An iterative implementation of the signal space separation method 
+    for magnetoencephalography systems with low channel counts' by Niall Holmes,
+    Richard Bowtell, Matthew Brooked and Samu Taulu.
+    
+    The method is based on the assumption that the SSS vectors represent the
+    MEG data in a hierarchical manner where the low-order components always
+    explain a larger amount of signal energy than the high-order components.
+    
+    Parameters
+    ----------
+    S : ndarray, shape (n_channels, n_basis)
+        Column normalized SSS basis.
+    PHI : ndarray, shape (n_channels, n_times)
+        MEG data.
+    Lin : int
+        Number of inner harmonics used in S.
+    Lout : int
+        Number of outer harmonics used in S.
+    ni : int
+        Number of iterations (default: 5).
+        
+    Returns
+    -------
+    X : ndarray, shape (n_basis, n_times)
+        SSS weights found via iterative method. Estimate signal as S @ X.
+    """
+    nsamp = PHI.shape[1]  # Number of time samples
+    dim_m = (Lin + 1) ** 2 - 1  # Dimension of the internal SSS basis
+    
+    # Extract the column vectors corresponding to each l-value of the internal basis
+    dimv = []
+    for n in range(1, Lin + 1):
+        dim1 = (n - 1 + 1) ** 2
+        dim2 = (n + 1) ** 2 - 1
+        dimv.append([dim1 - 1, dim2 - 1])  # Convert to 0-based indexing
+    
+    X = np.zeros((S.shape[1], nsamp))  # Initial zero weights vector
+    
+    # Pre-compute indices and pseudoinverses for each order
+    indices = []
+    pS = []
+    for n in range(Lin):
+        # Indices for Lin-specific components and all Lout components
+        idx = list(range(dimv[n][0], dimv[n][1] + 1)) + list(range(dim_m, dim_m + (Lout + 1) ** 2 - 1))
+        indices.append(idx)
+        # Pre-computed pseudoinverse matrices for individual l-values
+        pS.append(linalg.pinv(S[:, idx]))
+    
+    if Lin >= Lout:  # Check dimensions okay
+        for i in range(ni):  # For each iteration
+            for j in range(Lin):  # For each inner order
+                inds = indices[j]  # Find relevant indices
+                X[inds, :] = 0  # Zero relevant weights
+                XN = pS[j] @ (PHI - S @ X)  # Update the l-specific multipole moments
+                X[inds, :] = XN  # Update weights
+    else:
+        raise ValueError('Lin should be at least as large as Lout!')
+    
+    return X
 
 
 def _copy_preload_add_channels(raw, add_channels, copy, info):
