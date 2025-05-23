@@ -1298,7 +1298,7 @@ def _do_iterative(S, PHI, Lin, Lout, ni=5):
     """
     nsamp = PHI.shape[1]  # Number of time samples
     dim_m = (Lin + 1) ** 2 - 1  # Dimension of the internal SSS basis
-    
+    print('run iterative SSS')
     # Extract the column vectors corresponding to each l-value of the internal basis
     dimv = []
     for n in range(1, Lin + 1):
