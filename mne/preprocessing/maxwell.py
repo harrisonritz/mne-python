@@ -704,6 +704,8 @@ def _prep_maxwell_filter(
         st_overlap=st_overlap,
         mc=mc,
         iterative=iterative,  # Add this
+        int_order=int_order,
+        ext_order=ext_order,
     )
     return params
 
@@ -735,6 +737,8 @@ def _run_maxwell_filter(
     st_overlap,
     mc,
     iterative=False,  # Add this parameter
+    int_order=8,
+    ext_order=3,
 ):
     # Eventually find_bad_channels_maxwell could be sped up by moving this
     # outside the loop (e.g., in the prep function) but regularization depends
@@ -781,6 +785,7 @@ def _run_maxwell_filter(
         )
         int_order = update_kwargs.get('int_order', 8)
         ext_order = update_kwargs.get('ext_order', 3)
+        print('internal order:', int_order, ' / external order:', ext_order)
     else:
         S_decomp_init = None
         int_order = None
