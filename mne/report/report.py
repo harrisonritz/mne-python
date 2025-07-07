@@ -8,6 +8,7 @@ from __future__ import annotations  # only needed for Python ≤ 3.9
 
 import base64
 import copy
+from ctypes.wintypes import tagSIZE
 import dataclasses
 import os
 import os.path as op
@@ -329,19 +330,14 @@ def _check_tags(tags) -> tuple[str]:
 
     # Check for invalid characters
     invalid_chars = (" ", '"', "\n")  # we'll probably find more :-)
-    bad_tags = []
+    cleaned_tags = []
     for tag in tags:
+        cleaned_tag = tag
         for invalid_char in invalid_chars:
-            if invalid_char in tag:
-                bad_tags.append(tag)
-                break
-    if bad_tags:
-        raise ValueError(
-            f"The following tags contained invalid characters: "
-            f"{', '.join(repr(tag) for tag in bad_tags)}"
-        )
+            cleaned_tag = cleaned_tag.replace(invalid_char, "")
+        cleaned_tags.append(cleaned_tag)
 
-    return tags
+    return tuple(cleaned_tags)
 
 
 ###############################################################################
