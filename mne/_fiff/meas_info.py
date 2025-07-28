@@ -445,6 +445,7 @@ _unit2human = {
     FIFF.FIFF_UNIT_CEL: "C",
     FIFF.FIFF_UNIT_S: "S",
     FIFF.FIFF_UNIT_PX: "px",
+    FIFF.FIFF_UNIT_RAD: "rad",
 }
 
 
