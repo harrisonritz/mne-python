@@ -445,6 +445,7 @@ _unit2human = {
     FIFF.FIFF_UNIT_CEL: "C",
     FIFF.FIFF_UNIT_S: "S",
     FIFF.FIFF_UNIT_PX: "px",
+    FIFF.FIFF_UNIT_RAD: "rad",
 }
 
 
@@ -607,9 +608,9 @@ class SetChannelsMixin(MontageMixin):
                 coil_type = FIFF.FIFFV_COIL_FNIRS_FD_PHASE
             elif ch_type == "fnirs_od":
                 coil_type = FIFF.FIFFV_COIL_FNIRS_OD
-            elif ch_type == "eyetrack_pos":
+            elif ch_type == "eyegaze":
                 coil_type = FIFF.FIFFV_COIL_EYETRACK_POS
-            elif ch_type == "eyetrack_pupil":
+            elif ch_type == "pupil":
                 coil_type = FIFF.FIFFV_COIL_EYETRACK_PUPIL
             else:
                 coil_type = FIFF.FIFFV_COIL_NONE
