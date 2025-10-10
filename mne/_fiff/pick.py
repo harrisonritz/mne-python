@@ -834,13 +834,18 @@ def pick_types_forward(
 
 
 @fill_doc
-def channel_indices_by_type(info, picks=None):
+def channel_indices_by_type(info, picks=None, *, exclude=()):
     """Get indices of channels by type.
 
     Parameters
     ----------
     %(info_not_none)s
     %(picks_all)s
+    exclude : list | str
+        Set of channels to exclude, only used when picking based on
+        types (e.g., exclude="bads" when picks="meg").
+
+        .. versionadded:: 1.10.0
 
     Returns
     -------
@@ -865,7 +870,7 @@ def channel_indices_by_type(info, picks=None):
         eyegaze=list(),
         pupil=list(),
     )
-    picks = _picks_to_idx(info, picks, none="all", exclude=(), allow_empty=True)
+    picks = _picks_to_idx(info, picks, none="all", exclude=exclude, allow_empty=True)
     for k in picks:
         ch_type = channel_type(info, k)
         for key in idx_by_type.keys():
@@ -1088,7 +1093,7 @@ _PICK_TYPES_DATA_DICT = dict(
     dbs=True,
     temperature=False,
     gsr=False,
-    eyetrack=True,
+    eyetrack=False,
 )
 _PICK_TYPES_KEYS = tuple(list(_PICK_TYPES_DATA_DICT) + ["ref_meg"])
 _MEG_CH_TYPES_SPLIT = ("mag", "grad", "planar1", "planar2")
