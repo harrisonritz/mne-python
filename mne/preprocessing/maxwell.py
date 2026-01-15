@@ -239,6 +239,7 @@ def maxwell_filter(
     st_overlap=True,
     mc_interp="hann",
     verbose=None,
+    iterative=False,
 ):
     """Maxwell filter data using multipole moments.
 
