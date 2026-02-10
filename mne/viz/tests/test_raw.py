@@ -321,6 +321,9 @@ def test_scale_bar(browser_backend):
 def test_plot_raw_selection(raw, browser_backend):
     """Test selection mode of plot_raw()."""
     ismpl = browser_backend.name == "matplotlib"
+    if ismpl and os.getenv("MNE_CI_KIND") == "pip-pre":
+        # TODO VERSION FIX SOON AFTER 2026/01/26!
+        pytest.xfail("Needs mpl gh-31031")
     with raw.info._unlock():
         raw.info["lowpass"] = 10.0  # allow heavy decim during plotting
     browser_backend._close_all()  # ensure all are closed
@@ -521,7 +524,7 @@ def _monkeypatch_fig(fig, browser_backend):
         fig.showNormal = _norm
 
 
-def test_plot_raw_keypresses(raw, browser_backend, monkeypatch):
+def test_plot_raw_keypresses(raw, browser_backend):
     """Test keypress interactivity of plot_raw()."""
     with raw.info._unlock():
         raw.info["lowpass"] = 10.0  # allow heavy decim during plotting
@@ -765,6 +768,9 @@ def test_plot_misc_auto(browser_backend):
 def test_plot_annotations(raw, browser_backend):
     """Test annotation mode of the plotter."""
     ismpl = browser_backend.name == "matplotlib"
+    if ismpl and os.getenv("MNE_CI_KIND") == "pip-pre":
+        # TODO VERSION FIX SOON AFTER 2026/01/26!
+        pytest.xfail("Needs mpl gh-31031")
     with raw.info._unlock():
         raw.info["lowpass"] = 10.0
     _annotation_helper(raw, browser_backend)
@@ -802,6 +808,23 @@ def test_plot_annotations(raw, browser_backend):
     ch_pick = fig.mne.inst.ch_names[0]
     fig._toggle_single_channel_annotation(ch_pick, 0)
     assert fig.mne.inst.annotations.ch_names[0] == (ch_pick,)
+
+    # Check if annotation filtering works - All annotations
+    annot = Annotations([42, 50], [1, 1], ["test", "test2"], raw.info["meas_date"])
+    with pytest.warns(RuntimeWarning, match="expanding outside"):
+        raw.set_annotations(annot)
+
+    fig = raw.plot()
+
+    assert fig.mne.visible_annotations["test"] and fig.mne.visible_annotations["test2"]
+
+    # Check if annotation filtering works - filtering annotations
+    # This should only make test2 visible and hide test
+    fig = raw.plot(annotation_regex="2$")
+
+    assert (
+        not fig.mne.visible_annotations["test"] and fig.mne.visible_annotations["test2"]
+    )
 
 
 @pytest.mark.parametrize("active_annot_idx", (0, 1, 2))

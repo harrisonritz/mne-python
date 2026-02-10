@@ -1232,7 +1232,7 @@ eeg : bool | str | list | dict
 
 docdict["elevation"] = """
 elevation : float
-    The The zenith angle of the camera rendering the view in degrees.
+    The zenith angle of the camera rendering the view in degrees.
 """
 
 docdict["eltc_mode_notes"] = """
@@ -1283,6 +1283,11 @@ docdict["encoding_edf"] = """
 encoding : str
     Encoding of annotations channel(s). Default is "utf8" (the only correct
     encoding according to the EDF+ standard).
+"""
+
+docdict["encoding_nihon"] = """
+encoding : str
+    Text encoding of Nihon Kohden annotations. See :ref:`standard-encodings`.
 """
 
 docdict["encoding_nirx"] = """
@@ -1554,7 +1559,14 @@ ext_order : int
 docdict["extended_proj_maxwell"] = """
 extended_proj : list
     The empty-room projection vectors used to extend the external
-    SSS basis (i.e., use eSSS).
+    SSS basis (i.e., use eSSS). You can use any SSP projections that contain
+    pure *external* noise that you expect to be present in your signal.
+    Typically, this should be the case during an empty room recording. Get the
+    projections e.g. by calling::
+
+        proj = mne.compute_proj_raw(
+            raw_empty_room.pick('meg'), n_grad=3, n_mag=3, meg="combined"
+        )
 
     .. versionadded:: 0.21
 """
@@ -2879,6 +2891,11 @@ The raw unmodified measured values are stored in another file
 called .nosatflags_wlX. As NaN values can cause unexpected behaviour with
 mathematical functions the default behaviour is to return the
 saturated data.
+
+.. note::
+    This function expects ``fname`` to be a path to a directory containing the
+    NIRX data files (e.g., ``.hdr``, ``.wl1``, ``.wl2``, etc.). If you have a
+    ``.snirf`` file, use :func:`mne.io.read_raw_snirf` instead.
 """
 
 docdict["niter"] = """
@@ -3028,6 +3045,13 @@ offset : int
     current sampling rate.
 
     .. versionadded:: 0.12
+"""
+
+docdict["on_bad_hpi_match"] = """
+on_bad_hpi_match : str
+    Can be ``'raise'`` to raise an error, ``'warn'`` (default) to emit a
+    warning, or ``'ignore'`` to ignore when there is poor matching of HPI coordinates
+    (>10mm difference) for device - head transform.
 """
 
 docdict["on_baseline_ica"] = """
@@ -3958,7 +3982,8 @@ docdict["scalings_df"] = """
 scalings : dict | None
     Scaling factor applied to the channels picked. If ``None``, defaults to
     ``dict(eeg=1e6, mag=1e15, grad=1e13)`` — i.e., converts EEG to µV,
-    magnetometers to fT, and gradiometers to fT/cm.
+    magnetometers to fT, and gradiometers to fT/cm. See :term:`data channels`
+    and :term:`non-data channels` for full list of default scalings.
 """
 
 docdict["scalings_topomap"] = """
@@ -3979,7 +4004,7 @@ scoring : callable | str | None
 
 docdict["sdr_morph"] = """
 sdr_morph : instance of dipy.align.DiffeomorphicMap
-    The class that applies the the symmetric diffeomorphic registration
+    The class that applies the symmetric diffeomorphic registration
     (SDR) morph.
 """
 
@@ -4217,21 +4242,40 @@ spatial_colors : bool
 """
 
 docdict["sphere_topomap_auto"] = f"""\
-sphere : float | array-like | instance of ConductorModel | None  | 'auto' | 'eeglab'
-    The sphere parameters to use for the head outline. Can be array-like of
-    shape (4,) to give the X/Y/Z origin and radius in meters, or a single float
-    to give just the radius (origin assumed 0, 0, 0). Can also be an instance
-    of a spherical :class:`~mne.bem.ConductorModel` to use the origin and
-    radius from that object. If ``'auto'`` the sphere is fit to digitization
-    points. If ``'eeglab'`` the head circle is defined by EEG electrodes
-    ``'Fpz'``, ``'Oz'``, ``'T7'``, and ``'T8'`` (if ``'Fpz'`` is not present,
-    it will be approximated from the coordinates of ``'Oz'``). ``None`` (the
-    default) is equivalent to ``'auto'`` when enough extra digitization points
-    are available, and (0, 0, 0, {HEAD_SIZE_DEFAULT}) otherwise.
+sphere : float | array-like of float | instance of ConductorModel | str | list of str | None
+    The sphere parameters to use for the head outline.
+    Can be array-like of shape (4,) to give the X/Y/Z origin and radius in meters, or a
+    single float to give just the radius (origin assumed 0, 0, 0).
+    Can also be an instance of a spherical :class:`~mne.bem.ConductorModel` to use the
+    origin and radius from that object.
+    Can also be a ``str``, in which case:
+
+    - ``'auto'``: the sphere is fit to external digitization points first, and to
+      external + EEG digitization points if the former fails.
+
+    - ``'eeglab'``: the head circle is defined by EEG electrodes ``'Fpz'``, ``'Oz'``,
+      ``'T7'``, and ``'T8'`` (if ``'Fpz'`` is not present, it will be approximated from
+      the coordinates of ``'Oz'``).
+
+      - ``'extra'``: the sphere is fit to external digitization points.
+
+      - ``'eeg'``: the sphere is fit to EEG digitization points.
+
+      - ``'cardinal'``: the sphere is fit to cardinal digitization points.
+
+      - ``'hpi'``: the sphere is fit to HPI coil digitization points.
+
+    Can also be a list of ``str``, in which case the sphere is fit to the specified
+    digitization points, which can be any combination of ``'extra'``, ``'eeg'``,
+    ``'cardinal'``, and ``'hpi'``, as specified above.
+    ``None`` (the default) is equivalent to ``'auto'`` when enough extra digitization
+    points are available, and (0, 0, 0, {HEAD_SIZE_DEFAULT}) otherwise.
 
     .. versionadded:: 0.20
     .. versionchanged:: 1.1 Added ``'eeglab'`` option.
-"""
+    .. versionchanged:: 1.11 Added ``'extra'``, ``'eeg'``, ``'cardinal'``, ``'hpi'`` and
+       list of ``str`` options.
+"""  # noqa E501
 
 docdict["splash"] = """
 splash : bool
