@@ -137,54 +137,18 @@ class PyVistaFigure(Figure3D):
 
         self._nrows, self._ncols = self.store["shape"]
 
-    # def _build(self):
-    #     if self.plotter is None:
-    #         if not self.notebook:
-    #             out = _init_mne_qtapp(enable_icon=True, splash=self.splash)
-    #             # replace it with the Qt object
-    #             if self.splash:
-    #                 self.splash = out[1]
-    #                 app = out[0]
-    #             else:
-    #                 app = out
-    #             self.store["app"] = app
-    #         plotter = self._plotter_class(**self.store)
-    #         plotter.background_color = self.background_color
-    #         self._plotter = plotter
-    #     # TODO: This breaks trame "client" backend
-    #     if self.plotter.iren is not None:
-    #         self.plotter.iren.initialize()
-    #     _process_events(self.plotter)
-    #     _process_events(self.plotter)
-    #     return self.plotter
-
     def _build(self):
         if self.plotter is None:
-            if self.store.get("off_screen", False) and not self.notebook:
-                # Off-screen mode: use a plain pyvista.Plotter instead of
-                # BackgroundPlotter.  BackgroundPlotter always creates a Qt
-                # app_window and calls show() which triggers X11 window
-                # operations (BadWindow) on headless/cluster systems.
-                # pyvista.Plotter(off_screen=True) uses VTK's native off-screen
-                # renderer — no Qt, no X11 required.
-                plotter = Plotter(
-                    off_screen=True,
-                    window_size=self.store.get("window_size", (600, 600)),
-                    shape=self.store.get("shape", (1, 1)),
-                    border=self.store.get("border", False),
-                    title=self.store.get("title", "MNE-Python 3D Figure"),
-                )
-            else:
-                if not self.notebook:
-                    out = _init_mne_qtapp(enable_icon=True, splash=self.splash)
-                    # replace it with the Qt object
-                    if self.splash:
-                        self.splash = out[1]
-                        app = out[0]
-                    else:
-                        app = out
-                    self.store["app"] = app
-                plotter = self._plotter_class(**self.store)
+            if not self.notebook:
+                out = _init_mne_qtapp(enable_icon=True, splash=self.splash)
+                # replace it with the Qt object
+                if self.splash:
+                    self.splash = out[1]
+                    app = out[0]
+                else:
+                    app = out
+                self.store["app"] = app
+            plotter = self._plotter_class(**self.store)
             plotter.background_color = self.background_color
             self._plotter = plotter
         # TODO: This breaks trame "client" backend
@@ -193,7 +157,6 @@ class PyVistaFigure(Figure3D):
         _process_events(self.plotter)
         _process_events(self.plotter)
         return self.plotter
-    
 
     def _is_active(self):
         return hasattr(self.plotter, "ren_win")
