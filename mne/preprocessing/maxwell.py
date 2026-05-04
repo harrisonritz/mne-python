@@ -238,6 +238,7 @@ def maxwell_filter(
     extended_proj=(),
     st_overlap=True,
     mc_interp="hann",
+    reference_int_order=None,
     verbose=None,
 ):
     """Maxwell filter data using multipole moments.
@@ -291,6 +292,17 @@ def maxwell_filter(
 
         .. versionadded:: 1.10
     %(maxwell_mc_interp)s
+    reference_int_order : int | None
+        Order of an internal-subspace basis used as a temporal-correlation
+        reference for tSSS, independently of the reconstruction basis order
+        (``int_order``). Only meaningful when ``int_order=0`` (HFC mode) and
+        ``st_duration`` is set: the reference basis is used to identify
+        proximal-noise time-courses that correlate with brain-like signal
+        without paying any rank cost from internal-basis reconstruction.
+        ``None`` (default) preserves existing behavior. Must be ``None`` when
+        ``int_order > 0``.
+
+        .. versionadded:: 1.11
     %(verbose)s
 
     Returns
@@ -425,6 +437,7 @@ def maxwell_filter(
         extended_proj=extended_proj,
         st_overlap=st_overlap,
         mc_interp=mc_interp,
+        reference_int_order=reference_int_order,
     )
     raw_sss = _run_maxwell_filter(raw, **params)
     # Update info
@@ -457,6 +470,7 @@ def _prep_maxwell_filter(
     reconstruct="in",
     st_overlap=True,
     mc_interp="hann",
+    reference_int_order=None,
     verbose=None,
 ):
     # There are an absurd number of different possible notations for spherical
@@ -470,6 +484,38 @@ def _prep_maxwell_filter(
     _validate_type(raw, BaseRaw, "raw")
     _check_usable(raw, ignore_ref)
     _check_regularize(regularize)
+    int_order = _ensure_int(int_order, "int_order")
+    ext_order = _ensure_int(ext_order, "ext_order")
+    if int_order < 0:
+        raise ValueError(f"int_order must be >= 0, got {int_order}")
+    if ext_order < 0:
+        raise ValueError(f"ext_order must be >= 0, got {ext_order}")
+    if int_order == 0 and ext_order == 0:
+        raise ValueError("int_order and ext_order cannot both be 0")
+    if reference_int_order is not None:
+        reference_int_order = _ensure_int(reference_int_order, "reference_int_order")
+        if reference_int_order <= 0:
+            raise ValueError(
+                "reference_int_order must be >= 1 when not None, got "
+                f"{reference_int_order}"
+            )
+        if int_order != 0:
+            raise ValueError(
+                "reference_int_order is only supported when int_order=0 "
+                f"(HFC mode), got int_order={int_order}"
+            )
+    if int_order == 0:
+        # HFC mode: project external subspace out of good-channel data without
+        # reconstructing internal. Tracking proximal-noise time-courses with
+        # tSSS additionally requires a reference internal basis.
+        if reconstruct == "in":
+            reconstruct = "residual"
+        if st_duration is not None and reference_int_order is None:
+            raise ValueError(
+                "tSSS (st_duration is not None) requires reference_int_order "
+                "to be set when int_order=0; otherwise no internal subspace "
+                "is available to identify correlated noise components"
+            )
     st_correlation = float(st_correlation)
     if st_correlation <= 0.0 or st_correlation > 1.0:
         raise ValueError(f"Need 0 < st_correlation <= 1., got {st_correlation}")
@@ -658,6 +704,7 @@ def _prep_maxwell_filter(
         bad_condition=bad_condition,
         mag_scale=mag_scale,
         mult=mult,
+        reference_int_order=reference_int_order,
     )
     update_kwargs.update(
         nchan=good_mask.sum(), st_only=st_only, recon_trans=recon_trans
@@ -841,24 +888,39 @@ class _MoveComp:
         self.pos = pos
         self.sfreq = raw.info["sfreq"]
         self.interp = interp
-        assert reconstruct in ("orig", "in")
+        assert reconstruct in ("orig", "in", "residual")
         self.reconstruct = reconstruct
 
     def get_decomp_by_offset(self, offset):
         idx = np.where(self.pos[1] == offset)[0][0]
         dev_head_t = self.pos[0][idx]
         t = offset / self.sfreq
-        S_decomp, S_decomp_full, pS_decomp, reg_moments, n_use_in = self.get_decomp(
-            dev_head_t, t=t
-        )
+        (
+            S_decomp,
+            S_decomp_full,
+            pS_decomp,
+            reg_moments,
+            n_use_in,
+            op_in_ref,
+        ) = self.get_decomp(dev_head_t, t=t)
         S_recon_reg = self.S_recon.take(reg_moments[:n_use_in], axis=1)
         if self.reconstruct == "orig":
             op_sss = np.dot(S_decomp_full, pS_decomp)
-        else:
-            assert self.reconstruct == "in"
+        elif self.reconstruct == "in":
             op_sss = np.dot(S_recon_reg, pS_decomp[:n_use_in])
+        else:
+            assert self.reconstruct == "residual"
+            # HFC-style: project out the modeled (external) subspace from the
+            # good-channel data. Bad channels are passed through unchanged in
+            # feed(); see the good_mask indexing there.
+            op_sss = np.eye(S_decomp.shape[0]) - np.dot(S_decomp, pS_decomp)
         assert op_sss.shape[1] == self.n_good
-        op_in = np.dot(S_decomp[:, :n_use_in], pS_decomp[:n_use_in])
+        if op_in_ref is not None:
+            # Use the reference internal basis as the tSSS noise-tracking
+            # template (decoupled from the reconstruction basis order).
+            op_in = op_in_ref
+        else:
+            op_in = np.dot(S_decomp[:, :n_use_in], pS_decomp[:n_use_in])
         op_resid = np.eye(S_decomp.shape[0]) - op_in
         op_resid -= np.dot(S_decomp[:, n_use_in:], pS_decomp[n_use_in:])
         return op_sss, op_in, op_resid
@@ -871,7 +933,7 @@ class _MoveComp:
             interp=self.interp,
             name="MC",
         )
-        _, _, pS_decomp, self.reg_moments_0, _ = get_decomp(dev_head_t, t=0.0)
+        _, _, pS_decomp, self.reg_moments_0, _, _ = get_decomp(dev_head_t, t=0.0)
         self.n_good = pS_decomp.shape[1]
         self.S_recon = S_recon
         self.offset = 0
@@ -890,12 +952,20 @@ class _MoveComp:
                     [[0.0, 0.0, 0.0, 1.0]],
                 ]
             )
-            S_decomp_st, _, pS_decomp_st, _, n_use_in_st = self.get_decomp(
-                avg_trans, t=start / self.sfreq
-            )
-            self.op_in_avg = np.dot(
-                S_decomp_st[:, :n_use_in_st], pS_decomp_st[:n_use_in_st]
-            )
+            (
+                S_decomp_st,
+                _,
+                pS_decomp_st,
+                _,
+                n_use_in_st,
+                op_in_ref_st,
+            ) = self.get_decomp(avg_trans, t=start / self.sfreq)
+            if op_in_ref_st is not None:
+                self.op_in_avg = op_in_ref_st
+            else:
+                self.op_in_avg = np.dot(
+                    S_decomp_st[:, :n_use_in_st], pS_decomp_st[:n_use_in_st]
+                )
             self.op_resid_avg = (
                 np.eye(len(self.op_in_avg))
                 - self.op_in_avg
@@ -910,6 +980,13 @@ class _MoveComp:
         )[:2]
         self.offset += data.shape[-1]
 
+        # In "residual" (HFC) mode the spatial operator maps good-channel
+        # data to good-channel data; bad channels pass through unchanged.
+        if self.reconstruct == "residual":
+            sss_rows = good_mask
+        else:
+            sss_rows = slice(None)
+
         # Do movement compensation on the data, with optional smoothing
         in_data = resid_data = None
         for sl, left, right, l_interp in self.smooth.feed_generator(n_samp):
@@ -921,10 +998,10 @@ class _MoveComp:
                 resid_data = np.empty((l_resid.shape[0], data.shape[1]))
             r_interp = 1.0 - l_interp if l_interp is not None else None
             if not st_only:
-                data[:, sl] = np.dot(l_sss, good_data)
+                data[sss_rows, sl] = np.dot(l_sss, good_data)
                 if l_interp is not None:
-                    data[:, sl] *= l_interp
-                    data[:, sl] += r_interp * np.dot(right[0], good_data)
+                    data[sss_rows, sl] *= l_interp
+                    data[sss_rows, sl] += r_interp * np.dot(right[0], good_data)
 
             # Reconstruct data using original location from external
             # and internal spaces and compute residual
@@ -1286,6 +1363,7 @@ def _get_decomp(
     t,
     mag_scale,
     mult,
+    reference_int_order=None,
 ):
     """Get a decomposition matrix and pseudoinverse matrices."""
     #
@@ -1365,7 +1443,37 @@ def _get_decomp(
     S_decomp /= coil_scale[good_mask]
     S_decomp_full /= coil_scale
     assert pS_decomp.shape[1] == S_decomp.shape[0] == good_mask.sum()
-    return S_decomp, S_decomp_full, pS_decomp, reg_moments, n_use_in
+
+    #
+    # Reference internal basis (for tSSS noise tracking when int_order=0)
+    #
+    if reference_int_order is not None:
+        exp_ref = dict(
+            origin=exp["origin"],
+            int_order=reference_int_order,
+            ext_order=0,
+        )
+        S_ref_full = _get_s_decomp(
+            exp_ref,
+            all_coils,
+            trans,
+            coil_scale,
+            cal,
+            ignore_ref,
+            grad_picks,
+            mag_picks,
+            mag_scale,
+        )
+        if mult is not None:
+            S_ref_full = mult @ S_ref_full
+        S_ref = S_ref_full[good_mask]
+        pS_ref, _ = _col_norm_pinv(S_ref.copy())
+        pS_ref *= coil_scale[good_mask].T
+        S_ref /= coil_scale[good_mask]
+        op_in_ref = np.dot(S_ref, pS_ref)
+    else:
+        op_in_ref = None
+    return S_decomp, S_decomp_full, pS_decomp, reg_moments, n_use_in, op_in_ref
 
 
 def _get_s_decomp(
@@ -1398,7 +1506,7 @@ def _regularize(
     n_in = _get_n_moments(int_order)
     n_out = S_decomp.shape[1] - n_in
     t_str = f"{t:8.3f}"
-    if regularize is not None:  # regularize='in'
+    if regularize is not None and n_in > 0:  # regularize='in'
         in_removes, out_removes = _regularize_in(
             int_order, ext_order, S_decomp, mag_or_fine, extended_remove
         )
@@ -2997,7 +3105,7 @@ def compute_maxwell_basis(
         mag_scale=mag_scale,
         extended_proj=extended_proj,
     )
-    _, S_decomp_full, pS_decomp, reg_moments, n_use_in = params[
+    _, S_decomp_full, pS_decomp, reg_moments, n_use_in, _ = params[
         "_get_this_decomp_trans"
     ](info["dev_head_t"], t=0.0)
     return S_decomp_full, pS_decomp, reg_moments, n_use_in

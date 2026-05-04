@@ -1877,15 +1877,18 @@ def test_find_bads_maxwell_flat():
 
 
 @pytest.mark.parametrize(
-    "regularize, n, int_order",
+    "regularize, n, n_use_in_expected, int_order",
     [
-        (None, 80, 8),
-        ("in", 71, 8),
-        (None, 0, 0),
-        ("in", 0, 0),
+        (None, 80, 80, 8),
+        ("in", 71, 71, 8),
+        # int_order=0 -> HFC mode: residual operator on good channels, bads
+        # passed through. compute_rank operates on 305 good MEG chans and
+        # subtracts the 15 external components -> 290.
+        (None, 290, 0, 0),
+        ("in", 290, 0, 0),
     ],
 )
-def test_compute_maxwell_basis(regularize, n, int_order):
+def test_compute_maxwell_basis(regularize, n, n_use_in_expected, int_order):
     """Test compute_maxwell_basis."""
     raw = read_raw_fif(raw_small_fname).crop(0, 2)
     assert raw.info["bads"] == []
@@ -1899,11 +1902,29 @@ def test_compute_maxwell_basis(regularize, n, int_order):
     rank = compute_rank(raw_sss)["meg"]
     assert rank == n
     S, pS, reg_moments, n_use_in = compute_maxwell_basis(raw.info, **kwargs)
-    assert n_use_in == n
+    assert n_use_in == n_use_in_expected
     assert n_use_in == len(reg_moments) - 15  # no externals removed
-    xform = S[:, :n_use_in] @ pS[:n_use_in]
-    got = xform @ raw.pick(picks="meg", exclude="bads").get_data()
-    assert_allclose(got, want, atol=1e-16)
+    if int_order == 0:
+        # HFC: cleaned good-channel data = (I - S_good @ pS) @ good_data,
+        # bad-channel rows of `want` are unchanged. Note that `S` returned by
+        # compute_maxwell_basis covers all MEG channels including bads, so we
+        # locate the good rows via the all-MEG pick.
+        all_meg_picks = pick_types(raw.info, meg=True, exclude=[])
+        good_meg_idx = np.array(
+            [
+                i
+                for i, p in enumerate(all_meg_picks)
+                if raw.ch_names[p] not in raw.info["bads"]
+            ]
+        )
+        S_good = S[good_meg_idx]
+        xform = np.eye(S_good.shape[0]) - S_good @ pS
+        got = xform @ raw.pick(picks="meg", exclude="bads").get_data()
+        assert_allclose(got, want[good_meg_idx], atol=1e-16)
+    else:
+        xform = S[:, :n_use_in] @ pS[:n_use_in]
+        got = xform @ raw.pick(picks="meg", exclude="bads").get_data()
+        assert_allclose(got, want, atol=1e-16)
 
 
 @testing.requires_testing_data
@@ -2135,3 +2156,86 @@ def test_feed_avg(st_fixed, st_only, mc_interp):
     assert st_0_1 in log_ola
     assert log_1_2 in log_ola
     assert st_0p5_1p5 in log_ola
+
+
+def test_hfc_equivalence():
+    """maxwell_filter(int_order=0) matches compute_proj_hfc for order=1.
+
+    Higher orders diverge by design because the SSP path in
+    :func:`mne._fiff.proj.make_projector` truncates singular values below 1%
+    of the largest, while the maxwell_filter pseudoinverse path retains all
+    columns of the external basis. The two operators agree mathematically
+    only when the basis is well conditioned (order=1, homogeneous field).
+    """
+    from mne.preprocessing import compute_proj_hfc
+
+    raw = read_raw_fif(raw_small_fname).crop(0, 1)
+    raw.del_proj()
+
+    raw_mf = maxwell_filter(
+        raw.copy(),
+        int_order=0,
+        ext_order=1,
+        origin=(0.0, 0.0, 0.0),
+        coord_frame="meg",
+    )
+    raw_proj = (
+        raw.copy().add_proj(compute_proj_hfc(raw.info, order=1)).apply_proj()
+    )
+    assert_allclose(raw_mf.get_data("meg"), raw_proj.get_data("meg"), atol=1e-22)
+    # Rank reduction equals number of external components (3 for order=1)
+    rank_in = compute_rank(raw, rank="info")["meg"]
+    rank_out = compute_rank(raw_mf)["meg"]
+    assert rank_out == rank_in - 3
+
+
+def test_hfc_validation():
+    """maxwell_filter int_order=0 / reference_int_order validation."""
+    raw = read_raw_fif(raw_small_fname).crop(0, 1)
+    raw.del_proj()
+    with pytest.raises(ValueError, match="int_order must be >= 0"):
+        maxwell_filter(raw, int_order=-1)
+    with pytest.raises(ValueError, match="ext_order must be >= 0"):
+        maxwell_filter(raw, ext_order=-1)
+    with pytest.raises(ValueError, match="cannot both be 0"):
+        maxwell_filter(raw, int_order=0, ext_order=0)
+    with pytest.raises(ValueError, match="reference_int_order is only supported"):
+        maxwell_filter(raw, reference_int_order=8)
+    with pytest.raises(ValueError, match="reference_int_order must be >= 1"):
+        maxwell_filter(raw, int_order=0, ext_order=1, reference_int_order=0)
+    with pytest.raises(ValueError, match="tSSS .* requires reference_int_order"):
+        maxwell_filter(
+            raw,
+            int_order=0,
+            ext_order=1,
+            st_duration=1.0,
+            origin=(0.0, 0.0, 0.0),
+            coord_frame="meg",
+        )
+
+
+def test_hfc_reference_int_order():
+    """tSSS with reference_int_order tracks proximal-noise correlations."""
+    raw = read_raw_fif(raw_small_fname).crop(0, 5).load_data()
+    raw.del_proj()
+
+    common = dict(
+        int_order=0,
+        ext_order=1,
+        origin=(0.0, 0.0, 0.04),
+        coord_frame="meg",
+        st_duration=2.0,
+        st_overlap=False,
+    )
+    raw_ref = maxwell_filter(raw.copy(), reference_int_order=8, **common)
+    # With reference_int_order=None, tSSS in HFC mode is rejected at validation.
+    # Confirm the operator did meaningful work (output rank still preserved).
+    rank_in = compute_rank(raw, rank="info")["meg"]
+    rank_out = compute_rank(raw_ref)["meg"]
+    assert rank_out == rank_in - 3  # ext_order=1 -> 3 components
+    # Output is finite and not identical to input
+    data_in = raw.get_data("meg")
+    data_out = raw_ref.get_data("meg")
+    assert np.all(np.isfinite(data_out))
+    # In/out differ by more than just numerical noise (data ~1e-11 scale)
+    assert np.abs(data_in - data_out).max() > 1e-13

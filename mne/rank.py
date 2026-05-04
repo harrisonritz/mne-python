@@ -8,7 +8,13 @@ import numpy as np
 from scipy import linalg
 
 from ._fiff.meas_info import Info, _simplify_info
-from ._fiff.pick import _picks_by_type, _picks_to_idx, pick_channels_cov, pick_info
+from ._fiff.pick import (
+    _picks_by_type,
+    _picks_to_idx,
+    pick_channels_cov,
+    pick_info,
+    pick_types,
+)
 from ._fiff.proj import make_projector
 from .defaults import _handle_default
 from .utils import (
@@ -330,6 +336,15 @@ def _get_rank_sss(
     proc_info = proc_info[0]
     max_info = proc_info["max_info"]
     inside = max_info["sss_info"]["in_order"]
+    if inside == 0:
+        # HFC mode (int_order=0): no internal reconstruction; the cleaned data
+        # equals (I - P_ext) applied to good MEG channels, so the rank equals
+        # the number of good MEG channels minus the kept external components.
+        n_meg_good = len(
+            pick_types(info, meg=True, ref_meg=False, exclude="bads")
+        )
+        n_ext_kept = int(max_info["sss_info"]["components"].sum())
+        return max(n_meg_good - n_ext_kept, 0)
     nfree = (inside + 1) ** 2 - 1
     nfree -= (
         len(max_info["sss_info"]["components"][:nfree])

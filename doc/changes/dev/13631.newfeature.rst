@@ -1,0 +1,1 @@
+Allow :func:`mne.preprocessing.maxwell_filter` to perform homogeneous/harmonic field correction (HFC) by setting ``int_order=0``, and add the ``reference_int_order`` parameter to track proximal-noise time-courses with tSSS-style temporal projection while preserving sensor-space rank, by `Harrison Ritz`_.

@@ -2203,7 +2203,13 @@ inst : instance of RawTFR, EpochsTFR, or AverageTFR
 
 docdict["int_order_maxwell"] = """
 int_order : int
-    Order of internal component of spherical expansion.
+    Order of internal component of spherical expansion. Set to ``0`` to skip
+    the internal expansion entirely; in that case Maxwell filtering reduces
+    to homogeneous/harmonic field correction (HFC), projecting only the
+    external subspace out of the data and preserving sensor-space rank
+    aside from the ``(ext_order + 2) * ext_order`` external components.
+    See also :func:`mne.preprocessing.compute_proj_hfc` for an SSP-based
+    equivalent.
 """
 
 docdict["interaction_scene"] = """
