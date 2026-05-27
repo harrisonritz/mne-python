@@ -397,7 +397,7 @@ class MontageMixin:
 
         Returns
         -------
-        inst : instance of Raw | Epochs | Evoked
+        inst : same type as the input data
             The instance, modified in-place.
 
         See Also
@@ -540,7 +540,7 @@ class SetChannelsMixin(MontageMixin):
 
         Returns
         -------
-        inst : instance of Raw | Epochs | Evoked
+        inst : same type as the input data
             The instance (modified in place).
 
             .. versionchanged:: 0.20
@@ -643,7 +643,7 @@ class SetChannelsMixin(MontageMixin):
 
         Returns
         -------
-        inst : instance of Raw | Epochs | Evoked
+        inst : same type as the input data
             The instance (modified in place).
 
             .. versionchanged:: 0.20
@@ -788,7 +788,7 @@ class SetChannelsMixin(MontageMixin):
 
         Returns
         -------
-        inst : instance of Raw | Epochs | Evoked
+        inst : same type as the input data
             The modified instance.
 
         Notes
@@ -817,8 +817,8 @@ class SetChannelsMixin(MontageMixin):
 
         Returns
         -------
-        inst : instance of Raw | Epochs | Evoked
-            The modified raw instance. Operates in place.
+        inst : same type as the input data
+            The modified instance. Operates in place.
 
         See Also
         --------
@@ -2353,14 +2353,14 @@ def read_meas_info(fid, tree, clean_bads=False, verbose=None):
     if len(meas) == 0:
         raise ValueError("Could not find measurement data")
     if len(meas) > 1:
-        raise ValueError("Cannot read more that 1 measurement data")
+        raise ValueError("Cannot read more than 1 measurement data")
     meas = meas[0]
 
     meas_info = dir_tree_find(meas, FIFF.FIFFB_MEAS_INFO)
     if len(meas_info) == 0:
         raise ValueError("Could not find measurement info")
     if len(meas_info) > 1:
-        raise ValueError("Cannot read more that 1 measurement info")
+        raise ValueError("Cannot read more than 1 measurement info")
     meas_info = meas_info[0]
 
     #   Read measurement info
@@ -3669,6 +3669,18 @@ def anonymize_info(info, daysback=None, keep_his=False, verbose=None):
     """
     _validate_type(info, "info", "self")
 
+    valid_fields = {"his_id", "sex", "hand"}
+    if isinstance(keep_his, bool):  # True means keep all fields, False means keep none
+        keep_fields = valid_fields if keep_his else set()
+    elif isinstance(keep_his, str):
+        _check_option("keep_his", keep_his, valid_fields)
+        keep_fields = {keep_his}
+    else:
+        _validate_type(keep_his, (list, tuple, set), "keep_his")
+        keep_fields = set(keep_his)
+        for field in keep_fields:
+            _check_option("keep_his", field, valid_fields)
+
     default_anon_dos = datetime.datetime(
         2000, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
     )
@@ -3719,17 +3731,19 @@ def anonymize_info(info, daysback=None, keep_his=False, verbose=None):
     if subject_info is not None:
         if subject_info.get("id") is not None:
             subject_info["id"] = default_subject_id
-        if keep_his:
+        if keep_fields:
             logger.info(
-                "Not fully anonymizing info - keeping his_id, sex, and hand info"
+                f"Not fully anonymizing info - keeping {', '.join(sorted(keep_fields))}"
+                " of subject_info"
             )
-        else:
+        if "his_id" not in keep_fields:
             if subject_info.get("his_id") is not None:
                 subject_info["his_id"] = str(default_subject_id)
+        if "sex" not in keep_fields:
             if subject_info.get("sex") is not None:
                 subject_info["sex"] = default_sex
-            if subject_info.get("hand") is not None:
-                del subject_info["hand"]  # there's no "unknown" setting
+        if "hand" not in keep_fields:
+            subject_info.pop("hand", None)  # there's no "unknown" setting
 
         for key in ("last_name", "first_name", "middle_name"):
             if subject_info.get(key) is not None:
