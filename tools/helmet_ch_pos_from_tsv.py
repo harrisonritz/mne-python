@@ -207,6 +207,7 @@ def _parse_args(argv=None):
 
 
 def main(argv=None):
+    """Run the command-line interface."""
     args = _parse_args(argv)
     out = ch_pos_from_helmet_tsv(
         args.tsv,
