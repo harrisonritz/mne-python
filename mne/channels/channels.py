@@ -64,6 +64,18 @@ _ALLOWED_INTERPOLATION_MODES = ("accurate", "fast")
 
 def _get_meg_system(info):
     """Educated guess for the helmet type based on channels."""
+    # An explicit system can be requested via device_info. This is the only way
+    # to disambiguate OPM systems (e.g. Cerca) that share a coil type with other
+    # vendors and therefore cannot be told apart from the channels alone. The
+    # name must match a built-in helmet file ``data/helmets/<system>.fif.gz``.
+    from ..surface import _helmet_path
+
+    device_info = info.get("device_info") or {}
+    for key in ("type", "model"):
+        system = device_info.get(key)
+        if system and (_helmet_path / f"{system}.fif.gz").is_file():
+            return system, True
+
     have_helmet = True
     for ch in info["chs"]:
         if ch["kind"] == FIFF.FIFFV_MEG_CH:
