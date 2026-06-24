@@ -819,7 +819,7 @@ def test_spatiotemporal_only():
     raw_tsss = maxwell_filter(raw, st_duration=tmax, st_correlation=1.0, st_only=True)
     assert_allclose(raw[:][0], raw_tsss[:][0])
     # degenerate
-    with pytest.raises(ValueError, match="must not be None if st_only"):
+    with pytest.raises(ValueError, match="must not be None when st_only"):
         maxwell_filter(raw, st_only=True)
     # two-step process equivalent to single-step process
     raw_tsss = maxwell_filter(raw, st_duration=tmax, st_only=True)
@@ -838,6 +838,56 @@ def test_spatiotemporal_only():
     raw_tsss_2 = maxwell_filter(raw, st_duration=tmax, head_pos=head_pos)
     assert raw_tsss_2.info["bads"] == []
     assert_meg_snr(raw_tsss, raw_tsss_2, 1e5)
+
+
+@testing.requires_testing_data
+def test_spatiotemporal_only_ext():
+    """Test tSSS-only processing that also removes the external subspace."""
+    from mne._fiff.proj import make_projector
+
+    tmax = 0.5
+    raw = read_crop(raw_fname, (0, tmax)).load_data()
+    picks = pick_types(raw.info, meg=True, exclude="bads")[::2]
+    raw.pick([raw.ch_names[pick] for pick in picks])
+    n_projs_orig = len(raw.info["projs"])
+    kwargs = dict(st_duration=tmax / 2.0, coord_frame="meg", ext_order=3)
+
+    raw_tsss = maxwell_filter(raw, st_only=True, **kwargs)
+    raw_ext = maxwell_filter(raw, st_only="ext", **kwargs)
+
+    # External projectors are added (15 for ext_order=3) and marked active
+    ext_projs = [
+        p for p in raw_ext.info["projs"] if p["desc"].startswith("SSS: external")
+    ]
+    assert len(ext_projs) == 15
+    assert len(raw_ext.info["projs"]) == n_projs_orig + 15
+    assert all(p["active"] for p in ext_projs)
+    assert len(raw_tsss.info["projs"]) == n_projs_orig
+
+    # The temporal projection must be identical to st_only=True: applying the
+    # same external projector to the st_only=True output reproduces st_only="ext"
+    # exactly (the spatial and temporal projections commute).
+    meg_picks = pick_types(raw_ext.info, meg=True)
+    ch_names = [raw_ext.ch_names[pick] for pick in meg_picks]
+    proj_op = make_projector(ext_projs, ch_names)[0]
+    data_tsss = raw_tsss.get_data(picks=meg_picks)
+    data_ext = raw_ext.get_data(picks=meg_picks)
+    assert_allclose(proj_op @ data_tsss, data_ext, atol=1e-20)
+
+    # The external subspace is actually removed (projection is idempotent)
+    assert_allclose(proj_op @ data_ext, data_ext, atol=1e-20)
+    assert np.linalg.norm(data_ext) < np.linalg.norm(data_tsss)
+
+    # Determinism: a matching empty-room recording (same geometry) yields the
+    # same projectors and hence a consistent external subspace removal.
+    raw_ext_2 = maxwell_filter(raw, st_only="ext", **kwargs)
+    assert_array_equal(raw_ext.get_data(picks=meg_picks), raw_ext_2.get_data(meg_picks))
+
+    # Degenerate inputs
+    with pytest.raises(ValueError, match="must not be None when st_only"):
+        maxwell_filter(raw, st_only="ext", coord_frame="meg")
+    with pytest.raises(ValueError, match="Invalid value for the 'st_only'"):
+        maxwell_filter(raw, st_duration=tmax / 2.0, st_only="foo", coord_frame="meg")
 
 
 @testing.requires_testing_data

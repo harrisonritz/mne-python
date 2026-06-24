@@ -18,7 +18,7 @@ from .._fiff.constants import FIFF, FWD
 from .._fiff.meas_info import Info, _simplify_info
 from .._fiff.pick import pick_info, pick_types
 from .._fiff.proc_history import _read_ctc
-from .._fiff.proj import Projection
+from .._fiff.proj import Projection, make_projector
 from .._fiff.tag import _coil_trans_to_loc, _loc_to_coil_trans
 from .._fiff.write import DATE_NONE, _generate_meas_id
 from .._ola import _COLA, _Interp2, _Storer
@@ -491,8 +491,11 @@ def _prep_maxwell_filter(
             "empty room recording, consider using "
             'coord_frame="meg"'
         )
+    _validate_type(st_only, (bool, str), "st_only")
+    if isinstance(st_only, str):
+        _check_option("st_only", st_only, ("ext",), extra="when a string")
     if st_only and st_duration is None:
-        raise ValueError("st_duration must not be None if st_only is True")
+        raise ValueError("st_duration must not be None when st_only is used")
     if head_pos is None and mc_interp:
         mc_interp = "zero"
     add_channels = (head_pos is not None) and (not st_only)
@@ -831,7 +834,61 @@ def _run_maxwell_filter(
                     sfreq=info["sfreq"],
                 )
 
+    # Optionally remove the external subspace as well (st_only="ext"). The
+    # temporal projection above is applied along the time axis while this is
+    # applied along the channel axis, so the two operations commute and the
+    # temporal result is identical to st_only=True.
+    if st_only == "ext":
+        _project_sss_ext_subspace(
+            raw_sss, info, meg_picks, good_mask, _get_this_decomp_trans
+        )
+
     return raw_sss
+
+
+def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
+    """Remove the external SSS subspace using spatial projectors (HFC-like).
+
+    Mirrors :func:`mne.preprocessing.compute_proj_hfc`: orthonormal projection
+    vectors are built from the external multipole basis of the SSS
+    decomposition, applied to the data, and stored (active) in
+    ``raw_sss.info["projs"]``. The external basis is purely geometric, so a
+    matching empty-room recording processed identically yields the same
+    projectors and hence a consistent external subspace removal.
+    """
+    # External multipole basis at the reconstruction head position, restricted
+    # to the good MEG channels (in data units, i.e. coil_scale divided out).
+    S_decomp, _, _, _, n_use_in = get_decomp(info["dev_head_t"], t=0.0)
+    S_ext = S_decomp[:, n_use_in:]
+    if S_ext.shape[1] == 0:
+        return
+    # Normalize each basis vector (cf. compute_proj_hfc).
+    S_ext = S_ext / np.linalg.norm(S_ext, axis=0)
+    good_picks = meg_picks[good_mask]
+    ch_names = [raw_sss.ch_names[pick] for pick in good_picks]
+    projs = []
+    # Label by index within the external block to stay robust to regularization.
+    for ii, vec in enumerate(S_ext.T):
+        proj_data = dict(
+            col_names=ch_names,
+            row_names=None,
+            data=vec[np.newaxis, :],
+            ncol=len(ch_names),
+            nrow=1,
+        )
+        projs.append(
+            Projection(active=False, data=proj_data, desc=f"SSS: external {ii}")
+        )
+    # Orthogonal projection onto the complement of the external subspace, the
+    # same operator that apply_proj would build from these projectors.
+    proj_op, n_removed = make_projector(projs, ch_names)[:2]
+    raw_sss._data[good_picks] = proj_op @ raw_sss._data[good_picks]
+    logger.info(f"    Removing {n_removed:2d} external SSS component(s) via projectors")
+    # Mark as applied and persist them alongside any existing projectors.
+    for proj in projs:
+        proj["active"] = True
+    with raw_sss.info._unlock():
+        raw_sss.info["projs"].extend(projs)
 
 
 class _MoveComp:
@@ -2060,8 +2117,9 @@ def _update_sss_info(
         The tSSS information.
     reg_moments : ndarray | slice
         The moments that were used.
-    st_only : bool
-        Whether tSSS only was performed.
+    st_only : bool | str
+        Whether tSSS only was performed (and, if ``"ext"``, the external
+        subspace was additionally removed).
     recon_trans : instance of Transform
         The reconstruction trans.
     extended_proj : ndarray
@@ -2089,7 +2147,7 @@ def _update_sss_info(
         max_info_dict.update(sss_info=sss_info_dict, sss_cal=sss_cal, sss_ctc=sss_ctc)
         # Reset 'bads' for any MEG channels since they've been reconstructed
         # _reset_meg_bads(raw.info)
-        print('--------- dont reset meg bads')
+        print("--------- dont reset meg bads")
         # set the reconstruction transform
         with raw.info._unlock():
             raw.info["dev_head_t"] = recon_trans
