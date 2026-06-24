@@ -1,0 +1,1 @@
+Add support for ``st_only="ext"`` in :func:`mne.preprocessing.maxwell_filter` to additionally remove the external SSS subspace via spatial projectors (analogous to :func:`mne.preprocessing.compute_proj_hfc`) on top of the temporal tSSS projection, which is useful for reference-sensor-free systems such as OPM-MEG, by `Harrison Ritz`_.
