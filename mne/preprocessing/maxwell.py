@@ -858,12 +858,6 @@ def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
     """
     # # External multipole basis at the reconstruction head position, restricted
     # # to the good MEG channels (in data units, i.e. coil_scale divided out).
-    # S_decomp, _, _, _, n_use_in = get_decomp(info["dev_head_t"], t=0.0)
-    # S_ext = S_decomp[:, n_use_in:]
-    # if S_ext.shape[1] == 0:
-    #     return
-    # # Normalize each basis vector (cf. compute_proj_hfc).
-    # S_ext = S_ext / np.linalg.norm(S_ext, axis=0)
 
     # compute bases
     S_decomp, _, _, _, n_use_in = get_decomp(info["dev_head_t"], t=0.0)
@@ -873,24 +867,23 @@ def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
     # Orthogonalize S_in, then remove its projection from each S_ext column
     rcond  = 1e-4
     thresh = 1e-4
-    S_in /= np.linalg.norm(S_in, axis=0)
-    S_in_ortho = linalg.orth(S_in, rcond=rcond)
-    S_ext_orth = S_ext - np.dot(S_in_ortho, np.dot(S_in_ortho.T, S_ext))
 
-    # normalize, then remove any S_ext columns that are mostly in the S_in subspace
-    norms_orig = np.linalg.norm(S_ext, axis=0)
-    norms_orth = np.linalg.norm(S_ext_orth, axis=0)
-    keep = norms_orth > thresh
-    print(f"    change in norm of external SSS components after "
-          f"orthogonalization: {(norms_orth / norms_orig).round(2)}")
-    S_ext_orth = S_ext_orth[:, keep] / norms_orth[keep]
+    S_in /= np.linalg.norm(S_in, axis=0)
+    S_ext /= np.linalg.norm(S_ext, axis=0)
+    S_in_orth = linalg.orth(S_in, rcond=rcond)
+    S_ext -= np.dot(S_in_orth, np.dot(S_in_orth.T, S_ext))
+    
+    # remove any S_ext columns that are mostly in the S_in subspace    
+    norm_S_ext = np.linalg.norm(S_ext, axis=0)
+    keep = norm_S_ext > thresh
+    S_ext_keep = S_ext[:,keep] / norm_S_ext[keep]
     print(f"    ignoring {np.sum(~keep):2d} external SSS component(s) that are "
           f"mostly in the internal subspace")
     good_picks = meg_picks[good_mask]
     ch_names = [raw_sss.ch_names[pick] for pick in good_picks]
     projs = []
     # Label by index within the external block to stay robust to regularization.
-    for ii, vec in enumerate(S_ext_orth.T):
+    for ii, vec in enumerate(S_ext_keep.T):
         proj_data = dict(
             col_names=ch_names,
             row_names=None,
