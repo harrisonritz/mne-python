@@ -846,6 +846,67 @@ def _run_maxwell_filter(
     return raw_sss
 
 
+# def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
+#     """Remove the external SSS subspace using spatial projectors (HFC-like).
+
+#     Mirrors :func:`mne.preprocessing.compute_proj_hfc`: orthonormal projection
+#     vectors are built from the external multipole basis of the SSS
+#     decomposition, applied to the data, and stored (active) in
+#     ``raw_sss.info["projs"]``. The external basis is purely geometric, so a
+#     matching empty-room recording processed identically yields the same
+#     projectors and hence a consistent external subspace removal.
+#     """
+#     # # External multipole basis at the reconstruction head position, restricted
+#     # # to the good MEG channels (in data units, i.e. coil_scale divided out).
+
+#     # compute bases
+#     S_decomp, _, _, _, n_use_in = get_decomp(info["dev_head_t"], t=0.0)
+#     S_in  = S_decomp[:, :n_use_in]
+#     S_ext = S_decomp[:, n_use_in:]
+
+#     # Orthogonalize S_in, then remove its projection from each S_ext column
+#     rcond  = 1e-4
+#     thresh = 1e-4
+
+#     S_in /= np.linalg.norm(S_in, axis=0)
+#     S_ext /= np.linalg.norm(S_ext, axis=0)
+#     S_in_orth = linalg.orth(S_in, rcond=rcond)
+#     S_ext -= np.dot(S_in_orth, np.dot(S_in_orth.T, S_ext))
+    
+#     # remove any S_ext columns that are mostly in the S_in subspace    
+#     norm_S_ext = np.linalg.norm(S_ext, axis=0)
+#     keep = norm_S_ext > thresh
+#     S_ext_keep = S_ext[:,keep] / norm_S_ext[keep]
+#     print(f"    ignoring {np.sum(~keep):2d} external SSS component(s) that are "
+#           f"mostly in the internal subspace")
+#     good_picks = meg_picks[good_mask]
+#     ch_names = [raw_sss.ch_names[pick] for pick in good_picks]
+#     projs = []
+#     # Label by index within the external block to stay robust to regularization.
+#     for ii, vec in enumerate(S_ext_keep.T):
+#         proj_data = dict(
+#             col_names=ch_names,
+#             row_names=None,
+#             data=vec[np.newaxis, :],
+#             ncol=len(ch_names),
+#             nrow=1,
+#         )
+#         projs.append(
+#             Projection(active=False, data=proj_data, desc=f"SSS: external {ii}")
+#         )
+#     # Orthogonal projection onto the complement of the external subspace, the
+#     # same operator that apply_proj would build from these projectors.
+#     proj_op, n_removed = make_projector(projs, ch_names)[:2]
+#     raw_sss._data[good_picks] = proj_op @ raw_sss._data[good_picks]
+#     logger.info(f"    Removing {n_removed:2d} external SSS component(s) via projectors")
+#     # Mark as applied and persist them alongside any existing projectors.
+#     for proj in projs:
+#         proj["active"] = True
+#     with raw_sss.info._unlock():
+#         raw_sss.info["projs"].extend(projs)
+
+
+
 def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
     """Remove the external SSS subspace using spatial projectors (HFC-like).
 
@@ -856,54 +917,28 @@ def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
     matching empty-room recording processed identically yields the same
     projectors and hence a consistent external subspace removal.
     """
-    # # External multipole basis at the reconstruction head position, restricted
-    # # to the good MEG channels (in data units, i.e. coil_scale divided out).
 
-    # compute bases
-    S_decomp, _, _, _, n_use_in = get_decomp(info["dev_head_t"], t=0.0)
-    S_in  = S_decomp[:, :n_use_in]
-    S_ext = S_decomp[:, n_use_in:]
+    from .hfc import compute_proj_hfc
 
-    # Orthogonalize S_in, then remove its projection from each S_ext column
-    rcond  = 1e-4
-    thresh = 1e-4
-
-    S_in /= np.linalg.norm(S_in, axis=0)
-    S_ext /= np.linalg.norm(S_ext, axis=0)
-    S_in_orth = linalg.orth(S_in, rcond=rcond)
-    S_ext -= np.dot(S_in_orth, np.dot(S_in_orth.T, S_ext))
-    
-    # remove any S_ext columns that are mostly in the S_in subspace    
-    norm_S_ext = np.linalg.norm(S_ext, axis=0)
-    keep = norm_S_ext > thresh
-    S_ext_keep = S_ext[:,keep] / norm_S_ext[keep]
-    print(f"    ignoring {np.sum(~keep):2d} external SSS component(s) that are "
-          f"mostly in the internal subspace")
     good_picks = meg_picks[good_mask]
-    ch_names = [raw_sss.ch_names[pick] for pick in good_picks]
-    projs = []
-    # Label by index within the external block to stay robust to regularization.
-    for ii, vec in enumerate(S_ext_keep.T):
-        proj_data = dict(
-            col_names=ch_names,
-            row_names=None,
-            data=vec[np.newaxis, :],
-            ncol=len(ch_names),
-            nrow=1,
-        )
-        projs.append(
-            Projection(active=False, data=proj_data, desc=f"SSS: external {ii}")
-        )
-    # Orthogonal projection onto the complement of the external subspace, the
-    # same operator that apply_proj would build from these projectors.
-    proj_op, n_removed = make_projector(projs, ch_names)[:2]
-    raw_sss._data[good_picks] = proj_op @ raw_sss._data[good_picks]
-    logger.info(f"    Removing {n_removed:2d} external SSS component(s) via projectors")
-    # Mark as applied and persist them alongside any existing projectors.
-    for proj in projs:
-        proj["active"] = True
+    ch_names = [info["ch_names"][p] for p in good_picks]
+    projs = compute_proj_hfc(info,
+                            order=get_decomp.keywords["exp"]["ext_order"],
+                            picks=ch_names,  # exact SSS channel set
+                            exclude=[],       # already filtered by good_mask
+                            )
+    print("raw info before projectors added:")
+    print(raw_sss.info)
+
+    raw_sss.add_proj(projs=projs).apply_proj()
+    del projs
+
+    print("raw info before projectors removed:")
+    print(raw_sss.info)
     with raw_sss.info._unlock():
-        raw_sss.info["projs"].extend(projs)
+        raw_sss.info["projs"] = []
+    print("raw info after projectors removed:")
+    print(raw_sss.info)
 
 
 class _MoveComp:
