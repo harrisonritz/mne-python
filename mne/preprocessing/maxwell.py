@@ -933,12 +933,12 @@ def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
     raw_sss.add_proj(projs=projs).apply_proj()
     del projs
 
-    print("raw info before projectors removed:")
-    print(raw_sss.info)
-    with raw_sss.info._unlock():
-        raw_sss.info["projs"] = []
-    print("raw info after projectors removed:")
-    print(raw_sss.info)
+    # print("raw info before projectors removed:")
+    # print(raw_sss.info)
+    # with raw_sss.info._unlock():
+    #     raw_sss.info["projs"] = []
+    # print("raw info after projectors removed:")
+    # print(raw_sss.info)
 
 
 class _MoveComp:
