@@ -377,7 +377,7 @@ def maxwell_filter(
         and has been most extensively tested.
 
         .. versionadded:: 0.12
-    st_only : bool
+    st_only : bool | str
         If True, only tSSS (temporal) projection of MEG data will be
         performed on the output data. The non-tSSS parameters (e.g.,
         ``int_order``, ``calibration``, ``head_pos``, etc.) will still be
@@ -389,7 +389,16 @@ def maxwell_filter(
         evoked movement compensation will be performed with
         :func:`~mne.epochs.average_movements`.
 
+        Can also be the string ``"ext"``, in which case the external SSS
+        subspace is additionally removed from the data via spatial
+        projectors (analogous to :func:`~mne.preprocessing.compute_proj_hfc`)
+        on top of the temporal projection. The projectors are stored in
+        ``info["projs"]``. This is useful for reference-sensor-free systems
+        such as OPM-MEG. ``st_duration`` must be set when ``st_only`` is used.
+
         .. versionadded:: 0.12
+        .. versionchanged:: 1.14
+           Added support for ``st_only="ext"``.
     mag_scale : float | str
         The magenetometer scale-factor used to bring the magnetometers
         to approximately the same order of magnitude as the gradiometers
