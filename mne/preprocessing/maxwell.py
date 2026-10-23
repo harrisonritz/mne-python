@@ -263,6 +263,7 @@ def maxwell_filter(
     extended_proj=(),
     st_overlap=True,
     mc_interp="hann",
+    reset_bads=True,
     verbose=None,
 ):
     """Maxwell filter data using multipole moments.
@@ -442,6 +443,13 @@ def maxwell_filter(
         "linear", or "hann" (default in 1.11).
 
         .. versionadded:: 1.10
+    reset_bads : bool
+        If True (default), remove the MEG channels from ``info["bads"]`` after
+        filtering, since their signals have been reconstructed. If False, keep
+        them marked as bad. Ignored when ``st_only=True``, which does not
+        reconstruct bad channels.
+
+        .. versionadded:: 1.14
     verbose : bool | str | int | None
         Control verbosity of the logging output. If ``None``, use the default
         verbosity level. See the :ref:`logging documentation <tut-logging>` and
@@ -586,9 +594,10 @@ def maxwell_filter(
         st_overlap=st_overlap,
         mc_interp=mc_interp,
     )
+    _validate_type(reset_bads, bool, "reset_bads")
     raw_sss = _run_maxwell_filter(raw, **params)
     # Update info
-    _update_sss_info(raw_sss, **params["update_kwargs"])
+    _update_sss_info(raw_sss, reset_bads=reset_bads, **params["update_kwargs"])
     logger.info("[done]")
     return raw_sss
 
@@ -2334,6 +2343,7 @@ def _update_sss_info(
     st_only,
     recon_trans,
     extended_proj,
+    reset_bads=True,
 ):
     """Update info inplace after Maxwell filtering.
 
@@ -2395,8 +2405,8 @@ def _update_sss_info(
     else:
         max_info_dict.update(sss_info=sss_info_dict, sss_cal=sss_cal, sss_ctc=sss_ctc)
         # Reset 'bads' for any MEG channels since they've been reconstructed
-        # _reset_meg_bads(raw.info)
-        print("--------- dont reset meg bads")
+        if reset_bads:
+            _reset_meg_bads(raw.info)
         # set the reconstruction transform
         with raw.info._unlock():
             raw.info["dev_head_t"] = recon_trans

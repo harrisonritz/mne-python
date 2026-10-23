@@ -899,6 +899,9 @@ def test_spatiotemporal_only():
     raw_tsss_2 = maxwell_filter(raw, st_duration=tmax, head_pos=head_pos)
     assert raw_tsss_2.info["bads"] == []
     assert_meg_snr(raw_tsss, raw_tsss_2, 1e5)
+    raw_keep = maxwell_filter(raw, head_pos=head_pos, reset_bads=False)
+    assert raw_keep.info["bads"] == bads  # same data, bads kept
+    assert_allclose(raw_keep[:][0], maxwell_filter(raw, head_pos=head_pos)[:][0])
 
 
 @testing.requires_testing_data
