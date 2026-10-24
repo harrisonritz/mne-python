@@ -33,6 +33,10 @@ channel names in your raw recording)::
         --name-column Sensor --out Cerca_ch_pos.txt
 """
 
+# Authors: The MNE-Python contributors.
+# License: BSD-3-Clause
+# Copyright the MNE-Python contributors.
+
 from __future__ import annotations
 
 import argparse
