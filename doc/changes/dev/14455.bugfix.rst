@@ -1,0 +1,1 @@
+Fix AMM temporal filtering with existing SSP projectors and empty intermediate spaces, respect temporal annotation boundaries, and improve harmonic evaluation at the poles and rank validation, by `Harrison Ritz`_.

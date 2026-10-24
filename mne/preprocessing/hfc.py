@@ -4,10 +4,11 @@
 
 import numpy as np
 from scipy import linalg
-from scipy.special import gammaln, hyp2f1, lpmv
+from scipy.special import eval_gegenbauer, gammaln, hyp2f1
 
 from .._fiff.pick import _picks_to_idx, pick_info
-from .._fiff.proj import Projection
+from .._fiff.proj import Projection, make_projector
+from ..annotations import _annotations_starts_stops
 from ..io import BaseRaw
 from ..transforms import apply_trans
 from ..utils import (
@@ -152,10 +153,11 @@ def compute_proj_amm(
         The :class:`mne.Info` object with information about the
         sensors and methods of measurement.
     int_order : int
-        Order of the internal harmonics (``int_order * (int_order + 2)``
+        Positive order of the internal harmonics (``int_order * (int_order + 2)``
         harmonics; 99 for the default of 9).
     ext_order : int
-        Order of the external harmonics.
+        Positive order of the external harmonics. An order that spans all
+        selected channels leaves no internal space and raises an error.
     picks : str | array_like | slice | None
         Channels to include. Default of ``'meg'`` (same as None) will select
         all non-reference MEG channels.
@@ -205,9 +207,11 @@ def compute_proj_amm(
     first kind (external), the angular parts real spherical harmonics.
 
     This implementation was written from the mathematics and checked against
-    SPM's. It differs in one respect: the radial derivative of the internal
-    harmonics includes the derivative of the hypergeometric factor of
-    :math:`Q_l^m`, a term ``spm_ipharm.m`` leaves out.
+    SPM's. The radial derivative of the internal harmonics includes the
+    derivative of the hypergeometric factor of :math:`Q_l^m`, a term
+    ``spm_ipharm.m`` leaves out. Unlike SPM, the bases are not centered across
+    channels by default: centering changes the physical field spaces and
+    imposes an additional rejection of the equal-channel vector.
 
     To apply the projectors to a dataset, use
     ``inst.add_proj(projs).apply_proj()``, or :func:`apply_amm`, which can
@@ -258,14 +262,18 @@ def apply_amm(
     raw : instance of Raw
         Raw data with MEG channels, preloaded unless ``copy=True``.
     int_order : int
-        Order of the internal harmonics (see :func:`compute_proj_amm`).
+        Positive order of the internal harmonics (see :func:`compute_proj_amm`).
     ext_order : int
-        Order of the external harmonics.
+        Positive order of the external harmonics.
     st_duration : float | None
-        If not None, apply the temporal extension in windows of this many
-        seconds; a shorter remainder joins the last window.
+        If not None, a finite positive duration in seconds for temporal
+        windows; a shorter remainder joins the last window in each contiguous
+        segment. Temporal fitting skips annotations beginning with ``BAD``
+        or ``EDGE`` (case insensitive) and splits at recording boundaries.
+        Spatial projection still applies to all samples. If the intermediate
+        space is empty, only spatial projection is applied.
     st_correlation : float
-        Correlation limit of the temporal extension;
+        Finite correlation limit satisfying ``0 < st_correlation <= 1``;
         :footcite:`TierneyEtAl2024` used 0.98.
     coord_frame : str
         The coordinate frame the spheroid is fitted in, ``'head'`` (default)
@@ -313,6 +321,13 @@ def apply_amm(
     .. footbibliography::
     """
     _validate_type(raw, BaseRaw, "raw")
+    _validate_type(st_correlation, "numeric", "st_correlation")
+    if not np.isfinite(st_correlation) or not 0 < st_correlation <= 1:
+        raise ValueError("st_correlation must satisfy 0 < st_correlation <= 1")
+    if st_duration is not None:
+        _validate_type(st_duration, "numeric", "st_duration")
+        if not np.isfinite(st_duration) or st_duration <= 0:
+            raise ValueError("st_duration must be finite and positive")
     raw = raw.copy().load_data() if copy else raw
     _check_preload(raw, "apply_amm")
     info, u_in, u_out, u_res = _amm_spaces(
@@ -326,24 +341,34 @@ def apply_amm(
         accuracy,
     )
     picks = [raw.ch_names.index(name) for name in info["ch_names"]]
-    if st_duration is not None:
+    do_temporal = st_duration is not None and u_res.shape[1] > 0
+    if do_temporal:
         data = raw._data[picks]
         coef, res = u_in.T @ data, u_res.T @ data
-        n_win = max(int(round(st_duration * raw.info["sfreq"])), 1)
-        starts = list(range(0, data.shape[1] - n_win + 1, n_win)) or [0]
-        for start, stop in zip(starts, starts[1:] + [data.shape[1]]):
-            t_proj = _overlap_projector(
-                coef[:, start:stop], res[:, start:stop], st_correlation
-            )
-            coef[:, start:stop] -= (coef[:, start:stop] @ t_proj) @ t_proj.T
-            logger.info(
-                f"    Projecting {t_proj.shape[1]:2d} intersecting component(s) "
-                f"for samples {start} - {stop - 1}"
-            )
+        duration = min(st_duration, raw.n_times / raw.info["sfreq"])
+        n_win = max(int(round(duration * raw.info["sfreq"])), 1)
+        onsets, ends = _annotations_starts_stops(raw, ("bad", "edge"), invert=True)
+        for onset, end in zip(onsets, ends):
+            if onset == end:
+                continue
+            starts = list(range(onset, end - n_win + 1, n_win)) or [onset]
+            for start, stop in zip(starts, starts[1:] + [end]):
+                t_proj = _overlap_projector(
+                    coef[:, start:stop], res[:, start:stop], st_correlation
+                )
+                coef[:, start:stop] -= (coef[:, start:stop] @ t_proj) @ t_proj.T
+                logger.info(
+                    f"    Projecting {t_proj.shape[1]:2d} intersecting component(s) "
+                    f"for samples {start} - {stop - 1}"
+                )
     raw.add_proj(_amm_projs(info, np.concatenate([u_out, u_res], axis=1)))
     raw.apply_proj()
-    if st_duration is not None:
+    if do_temporal:
         raw._data[picks] = u_in @ coef
+        # Reconstruction can restore existing SSP components. Their flags are
+        # already active, so apply_proj() would not apply them again.
+        projector = make_projector(raw.info["projs"], raw.ch_names, raw.info["bads"])[0]
+        raw._data[:] = projector @ raw._data
     return raw
 
 
@@ -371,6 +396,10 @@ def _amm_spaces(
     """Orthonormal bases of the internal, external and remaining spaces."""
     int_order = _ensure_int(int_order, "int_order")
     ext_order = _ensure_int(ext_order, "ext_order")
+    for name, order in (("int_order", int_order), ("ext_order", ext_order)):
+        if order < 1:
+            raise ValueError(f"{name} must be at least 1, got {order}")
+    _validate_type(center_basis, bool, "center_basis")
     _check_option("coord_frame", coord_frame, ("head", "meg"))
     picks = _picks_to_idx(info, picks, none="meg", exclude=exclude, with_ref_meg=False)
     info = pick_info(info, picks)
@@ -411,10 +440,23 @@ def _amm_spaces(
             )
         if center_basis:
             basis -= basis.mean(axis=0)
-        bases.append(basis / np.linalg.norm(basis, axis=0))
+        norms = np.linalg.norm(basis, axis=0)
+        bases.append(basis / np.where(norms == 0, 1, norms))
     u_out = _orth_overwrite(bases[0])
-    u_in = _orth_overwrite(bases[1] - u_out @ (u_out.T @ bases[1]))
-    u_res = linalg.null_space(np.concatenate([u_in, u_out], axis=1).T)
+    complement = linalg.null_space(u_out.T)
+    if complement.shape[1] == 0:
+        raise ValueError(
+            "The external harmonics span all selected channels; reduce ext_order "
+            "or include more channels"
+        )
+    u, s, _ = linalg.svd(complement.T @ bases[1], full_matrices=True)
+    # Use the original basis scale, not the size of subtraction roundoff.
+    tol = max(bases[1].shape) * np.finfo(float).eps * np.linalg.norm(bases[1])
+    rank = np.sum(s > tol)
+    if rank == 0:
+        raise ValueError("The harmonics leave no internal space; reduce ext_order")
+    u_in = complement @ u[:, :rank]
+    u_res = complement @ u[:, rank:]
     logger.info(
         f"    AMM: spheroid a={1e3 * a:0.1f} mm, b={1e3 * b:0.1f} mm; keeping "
         f"{u_in.shape[1]} of {info['nchan']} dimensions"
@@ -488,7 +530,11 @@ def _prolate_coords(v, c):
     """
     t = np.sum(v**2, axis=1) + c**2
     mu = np.sqrt((t + np.sqrt(np.maximum(t**2 - 4 * v[:, 1] ** 2 * c**2, 0))) / 2)
-    nu = np.arccos(np.clip(v[:, 1] / mu, -1, 1))
+    # atan2 preserves the small transverse coordinate near either pole.
+    nu = np.arctan2(
+        np.hypot(v[:, 0], v[:, 2]) * mu,
+        v[:, 1] * np.sqrt(mu**2 - c**2),
+    )
     return mu, nu, np.arctan2(v[:, 2], v[:, 0])
 
 
@@ -540,15 +586,22 @@ def _prolate_radial(kind, mu, a, c, degree, order):
 def _prolate_angular(nu, phi, degree, order):
     """Real spherical harmonic of ``(nu, phi)`` and its derivatives in phi and nu."""
     m = abs(order)
-    x = np.cos(nu)
-    p = lpmv(m, degree, x)  # with the Condon-Shortley phase
-    if m == 0:
-        dp = lpmv(1, degree, x)
-    else:
-        dp = -0.5 * (
-            (degree + m) * (degree - m + 1) * lpmv(m - 1, degree, x)
-            - lpmv(m + 1, degree, x)
+    x, sine = np.cos(nu), np.sin(nu)
+    # P_l^m(x) = (-sin(nu))^m (2m-1)!! C_{l-m}^{m+1/2}(x).
+    # Unlike lpmv(cos(nu)), this retains sin(nu) when cos(nu) rounds to +/-1.
+    factor = (-1.0) ** m * np.exp(gammaln(2 * m + 1) - m * np.log(2) - gammaln(m + 1))
+    poly = eval_gegenbauer(degree - m, m + 0.5, x)
+    p = factor * sine**m * poly
+    dp = np.zeros_like(nu)
+    if degree > m:
+        dp -= (
+            factor
+            * sine ** (m + 1)
+            * (2 * m + 1)
+            * eval_gegenbauer(degree - m - 1, m + 1.5, x)
         )
+    if m:
+        dp += factor * m * sine ** (m - 1) * x * poly
     if order > 0:
         trig, dtrig = np.cos(m * phi), -m * np.sin(m * phi)
     elif order < 0:
@@ -573,8 +626,9 @@ def _prolate_fields(v, n, a, b, max_degree, kind):
     w_mu = (mu * np.sin(nu) * n_xz + s * np.cos(nu) * n[:, 1]) / d * (s / d)
     w_nu = (s * np.cos(nu) * n_xz - mu * np.sin(nu) * n[:, 1]) / d**2
     h_phi = s * np.sin(nu)
+    pole = (v[:, 0] == 0) & (v[:, 2] == 0)
     with np.errstate(divide="ignore", invalid="ignore"):
-        w_phi = np.where(  # on the axis there is no phi term
+        w_phi = np.where(
             h_phi > 0, (np.cos(phi) * n[:, 2] - np.sin(phi) * n[:, 0]) / h_phi, 0.0
         )
     columns = list()
@@ -582,5 +636,23 @@ def _prolate_fields(v, n, a, b, max_degree, kind):
         for order in range(-degree, degree + 1):
             r, dr = _prolate_radial(kind, mu, a, c, degree, abs(order))
             ang, dang_phi, dang_nu = _prolate_angular(nu, phi, degree, order)
-            columns.append(w_mu * dr * ang + w_nu * r * dang_nu + w_phi * r * dang_phi)
+            field = w_mu * dr * ang + w_nu * r * dang_nu + w_phi * r * dang_phi
+            # At a pole only m=0 (axial) and |m|=1 (transverse) survive.
+            sign = np.sign(v[pole, 1])
+            if order == 0:
+                field[pole] = dr[pole] * sign ** (degree + 1) * n[pole, 1]
+            elif abs(order) == 1:
+                axis = 2 if order < 0 else 0
+                field[pole] = (
+                    -r[pole]
+                    / s[pole]
+                    * degree
+                    * (degree + 1)
+                    / 2
+                    * sign ** (degree + 1)
+                    * n[pole, axis]
+                )
+            else:
+                field[pole] = 0
+            columns.append(field)
     return np.column_stack(columns)

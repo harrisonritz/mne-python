@@ -18,6 +18,7 @@ from mne.io.constants import FIFF
 from mne.preprocessing import apply_amm, compute_proj_amm
 from mne.preprocessing.hfc import (
     _SPHEROID_ROTATIONS,
+    _amm_spaces,
     _prolate_angular,
     _prolate_coords,
     _prolate_fields,
@@ -204,10 +205,11 @@ def _dipole_field(info, r0, moment):
 
 
 @pytest.mark.parametrize("kind", ["internal", "external"])
-def test_amm_basis(kind):
+@pytest.mark.parametrize("b", [0.08, 0.1])
+def test_amm_basis(kind, b):
     """Each AMM basis vector is the field of a harmonic potential."""
     rng = np.random.default_rng(0)
-    a, b, c = 0.1, 0.08, 0.06
+    a, c = 0.1, np.sqrt(0.1**2 - b**2)
     v = rng.normal(size=(20, 3))
     v *= 0.13 / np.linalg.norm(v, axis=1, keepdims=True)
     n = rng.normal(size=(20, 3))
@@ -232,6 +234,43 @@ def test_amm_basis(kind):
     fields = _prolate_fields(v, n, a, b, 4, kind)
     assert_allclose(grad, fields, atol=1e-6 * np.abs(fields).max())
     assert np.abs(lap).max() < 1e-5 * np.abs(fields).max() / h  # Laplace
+
+    # The coordinate poles have finite transverse gradients, including the
+    # uniform external fields. Check the limit from either side of the axis.
+    v = np.tile([[0.0, 0.2, 0.0], [0.0, -0.2, 0.0]], (3, 1))
+    n = np.repeat(np.eye(3), 2, axis=0)
+    grad = 0
+    for step in np.eye(3) * h:
+        grad = (
+            grad
+            + (potential(v + step) - potential(v - step))
+            / (2 * h)
+            * (n @ step / h)[:, np.newaxis]
+        )
+    fields = _prolate_fields(v, n, a, b, 4, kind)
+    assert_allclose(fields, grad, atol=1e-6 * np.abs(grad).max())
+    if kind == "external":
+        for offset in (0.0, -1e-10, 1e-10):
+            v[:, 0] = offset
+            fields = _prolate_fields(v, n, a, b, 1, kind)
+            assert_allclose(
+                fields, np.c_[-n[:, 2] / b, n[:, 1] / a, -n[:, 0] / b], atol=1e-12
+            )
+
+
+@pytest.mark.parametrize("kind", ["internal", "external"])
+@pytest.mark.parametrize("c", [0.0, 0.06, 0.09])
+def test_amm_radial(kind, c):
+    """Radial derivatives include every term, up to the default internal order."""
+    mu, a, step = np.array([0.101, 0.12, 0.2]), 0.1, 1e-7
+    for degree in range(1, 10):
+        for order in range(degree + 1):
+            _, derivative = _prolate_radial(kind, mu, a, c, degree, order)
+            plus = _prolate_radial(kind, mu + step, a, c, degree, order)[0]
+            minus = _prolate_radial(kind, mu - step, a, c, degree, order)[0]
+            assert_allclose(
+                derivative, (plus - minus) / (2 * step), rtol=1e-7, atol=1e-8
+            )
 
 
 def test_compute_proj_amm():
@@ -273,10 +312,126 @@ def test_compute_proj_amm():
     assert_allclose(proj_x[0], proj, atol=1e-10)
     meg = compute_proj_amm(info, coord_frame="meg", accuracy="point")
     assert_allclose(make_projector(meg, info["ch_names"])[0], proj, atol=1e-12)
+    # Changing a channel's polarity cannot change the physical projection.
+    signs = rng.choice([-1, 1], info["nchan"])
+    flipped = info.copy()
+    for ch, sign in zip(flipped["chs"], signs):
+        ch["loc"][6:] *= sign  # flip ey and ez, preserving a right-handed frame
+    flipped = make_projector(compute_proj_amm(flipped), info["ch_names"])[0]
+    assert_allclose(signs[:, None] * flipped * signs, proj, atol=1e-10)
     with info._unlock():
         info["dev_head_t"] = None
     with pytest.raises(ValueError, match='coord_frame="head" needs'):
         compute_proj_amm(info)
+
+
+@pytest.mark.parametrize("n_channels", [36, 72, 120])
+def test_amm_rank(n_channels):
+    """Rank is bounded by the external complement; empty residuals are valid."""
+    info = pick_info(_opm_info(), np.arange(n_channels))
+    _, u_in, u_out, u_res = _amm_spaces(
+        info, 9, 2, "meg", "bads", "head", False, "point"
+    )
+    assert u_in.shape[1] == min(99, n_channels - 8)
+    assert u_res.shape[1] == max(n_channels - 107, 0)
+    basis = np.c_[u_in, u_out, u_res]
+    assert_allclose(basis.T @ basis, np.eye(n_channels), atol=1e-12)
+    data = np.random.default_rng(0).normal(size=(n_channels, 400))
+    raw = RawArray(data, info)
+    spatial = apply_amm(raw, accuracy="point")
+    temporal = apply_amm(raw, accuracy="point", st_duration=1.0)
+    if u_res.shape[1] == 0:
+        assert_allclose(temporal.get_data(), spatial.get_data(), atol=1e-12)
+    with pytest.raises(ValueError, match="external harmonics.*all.*channels"):
+        compute_proj_amm(info, ext_order=12)
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_amm_existing_proj(active, mixed):
+    """Temporal reconstruction honors existing active and inactive SSPs."""
+    info, u_in, u_out, _ = _amm_spaces(
+        _opm_info(), 9, 2, "meg", "bads", "head", False, "point"
+    )
+    vec = u_in[:, 0] + mixed * u_out[:, 0]
+    proj = mne.Projection(
+        active=False,
+        desc="existing SSP",
+        data=dict(
+            col_names=info["ch_names"],
+            row_names=None,
+            data=vec[None],
+            ncol=len(vec),
+            nrow=1,
+        ),
+    )
+    raw = RawArray(np.random.default_rng(0).normal(size=(120, 800)), info).add_proj(
+        proj
+    )
+    if active:
+        raw.apply_proj()
+    spatial = apply_amm(raw, accuracy="point")
+    temporal = apply_amm(raw, accuracy="point", st_duration=2.0)
+    combined = make_projector(temporal.info["projs"], temporal.ch_names)[0]
+    assert all(p["active"] for p in temporal.info["projs"])
+    assert_allclose(combined @ temporal.get_data(), temporal.get_data(), atol=1e-12)
+    assert_allclose(temporal.get_data(), spatial.get_data(), atol=1e-12)
+
+
+def test_amm_annotations():
+    """Temporal fitting skips BAD/EDGE spans and never crosses a boundary."""
+    info = _opm_info()
+    rng = np.random.default_rng(0)
+    raw = RawArray(rng.normal(size=(120, 300)), info, first_samp=10000)
+    raw.set_annotations(
+        mne.Annotations([0.4, 0.9], [0.2, 0.1], ["BAD_artifact", "EDGE_motion"])
+    )
+    raw = mne.concatenate_raws([raw, RawArray(rng.normal(size=(120, 300)), info)])
+    expected = apply_amm(raw, accuracy="point").get_data()
+    spatial = expected.copy()
+    for start, stop in [(0, 80), (120, 180), (200, 300), (300, 600)]:
+        segment = raw.copy().crop(start / 200.0, (stop - 1) / 200.0)
+        expected[:, start:stop] = apply_amm(
+            segment, accuracy="point", st_duration=10.0
+        ).get_data()
+    actual = apply_amm(raw, accuracy="point", st_duration=10.0).get_data()
+    assert np.linalg.norm(expected - spatial) > 1.0
+    assert_allclose(actual, expected, atol=1e-12)
+    for start, stop in [(80, 120), (180, 200)]:
+        assert_allclose(actual[:, start:stop], spatial[:, start:stop], atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "kwargs, error, match",
+    [
+        ({"int_order": value}, ValueError, "int_order must be at least 1")
+        for value in (0, -1)
+    ]
+    + [
+        ({"ext_order": value}, ValueError, "ext_order must be at least 1")
+        for value in (0, -1)
+    ]
+    + [
+        ({"st_duration": value}, ValueError, "st_duration must be finite and positive")
+        for value in (0, -1, np.nan, np.inf)
+    ]
+    + [
+        ({"st_correlation": value}, ValueError, "st_correlation must satisfy")
+        for value in (0, -1, 1.5, np.nan, np.inf)
+    ]
+    + [
+        ({"st_duration": "1"}, TypeError, "st_duration"),
+        ({"st_correlation": "0.98"}, TypeError, "st_correlation"),
+        ({"center_basis": "false"}, TypeError, "center_basis"),
+    ],
+)
+def test_amm_validation(kwargs, error, match):
+    """Reject invalid options before filtering, including when temporal is off."""
+    raw = RawArray(np.zeros((120, 20)), _opm_info())
+    with pytest.raises(error, match=match):
+        apply_amm(raw, copy=False, **kwargs)
+    assert not raw.info["projs"]
+    assert not raw.get_data().any()
 
 
 def test_apply_amm():
