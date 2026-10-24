@@ -85,11 +85,13 @@ Projections:
    annotate_movement
    annotate_muscle_zscore
    annotate_nan
+   apply_amm
    compute_average_dev_head_t
    compute_current_source_density
    compute_bridged_electrodes
    compute_fine_calibration
    compute_maxwell_basis
+   compute_proj_amm
    compute_proj_ecg
    compute_proj_eog
    compute_proj_hfc

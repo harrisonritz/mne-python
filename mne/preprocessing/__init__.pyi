@@ -7,11 +7,13 @@ __all__ = [
     "annotate_movement",
     "annotate_muscle_zscore",
     "annotate_nan",
+    "apply_amm",
     "compute_average_dev_head_t",
     "compute_bridged_electrodes",
     "compute_current_source_density",
     "compute_fine_calibration",
     "compute_maxwell_basis",
+    "compute_proj_amm",
     "compute_proj_ecg",
     "compute_proj_eog",
     "compute_proj_hfc",
@@ -71,7 +73,7 @@ from .artifact_detection import (
 )
 from .ecg import create_ecg_epochs, find_ecg_events
 from .eog import create_eog_epochs, find_eog_events
-from .hfc import compute_proj_hfc
+from .hfc import apply_amm, compute_proj_amm, compute_proj_hfc
 from .ica import (
     ICA,
     corrmap,
