@@ -29,6 +29,10 @@ See the module docstring of ``mne/surface.py`` and ``_get_meg_system`` in
 acquired data.
 """
 
+# Authors: The MNE-Python contributors.
+# License: BSD-3-Clause
+# Copyright the MNE-Python contributors.
+
 from __future__ import annotations
 
 import argparse

@@ -19,7 +19,7 @@ from .._fiff.constants import FIFF, FWD
 from .._fiff.meas_info import Info, _simplify_info
 from .._fiff.pick import pick_info, pick_types
 from .._fiff.proc_history import _read_ctc
-from .._fiff.proj import Projection, make_projector
+from .._fiff.proj import Projection
 from .._fiff.tag import _coil_trans_to_loc, _loc_to_coil_trans
 from .._fiff.write import DATE_NONE, _generate_meas_id
 from .._ola import _COLA, _Interp2, _Storer
@@ -1072,8 +1072,8 @@ def _run_maxwell_filter(
 #     S_ext /= np.linalg.norm(S_ext, axis=0)
 #     S_in_orth = linalg.orth(S_in, rcond=rcond)
 #     S_ext -= np.dot(S_in_orth, np.dot(S_in_orth.T, S_ext))
-    
-#     # remove any S_ext columns that are mostly in the S_in subspace    
+
+#     # remove any S_ext columns that are mostly in the S_in subspace
 #     norm_S_ext = np.linalg.norm(S_ext, axis=0)
 #     keep = norm_S_ext > thresh
 #     S_ext_keep = S_ext[:,keep] / norm_S_ext[keep]
@@ -1098,13 +1098,14 @@ def _run_maxwell_filter(
 #     # same operator that apply_proj would build from these projectors.
 #     proj_op, n_removed = make_projector(projs, ch_names)[:2]
 #     raw_sss._data[good_picks] = proj_op @ raw_sss._data[good_picks]
-#     logger.info(f"    Removing {n_removed:2d} external SSS component(s) via projectors")
+#     logger.info(
+#         f"    Removing {n_removed:2d} external SSS component(s) via projectors"
+#     )
 #     # Mark as applied and persist them alongside any existing projectors.
 #     for proj in projs:
 #         proj["active"] = True
 #     with raw_sss.info._unlock():
 #         raw_sss.info["projs"].extend(projs)
-
 
 
 def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
@@ -1117,16 +1118,16 @@ def _project_sss_ext_subspace(raw_sss, info, meg_picks, good_mask, get_decomp):
     matching empty-room recording processed identically yields the same
     projectors and hence a consistent external subspace removal.
     """
-
     from .hfc import compute_proj_hfc
 
     good_picks = meg_picks[good_mask]
     ch_names = [info["ch_names"][p] for p in good_picks]
-    projs = compute_proj_hfc(info,
-                            order=get_decomp.keywords["exp"]["ext_order"],
-                            picks=ch_names,  # exact SSS channel set
-                            exclude=[],       # already filtered by good_mask
-                            )
+    projs = compute_proj_hfc(
+        info,
+        order=get_decomp.keywords["exp"]["ext_order"],
+        picks=ch_names,  # exact SSS channel set
+        exclude=[],  # already filtered by good_mask
+    )
     print("raw info before projectors added:")
     print(raw_sss.info)
 
