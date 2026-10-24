@@ -1098,7 +1098,9 @@ def _run_maxwell_filter(
 #     # same operator that apply_proj would build from these projectors.
 #     proj_op, n_removed = make_projector(projs, ch_names)[:2]
 #     raw_sss._data[good_picks] = proj_op @ raw_sss._data[good_picks]
-#     logger.info(f"    Removing {n_removed:2d} external SSS component(s) via projectors")
+#     logger.info(
+#         f"    Removing {n_removed:2d} external SSS component(s) via projectors"
+#     )
 #     # Mark as applied and persist them alongside any existing projectors.
 #     for proj in projs:
 #         proj["active"] = True
